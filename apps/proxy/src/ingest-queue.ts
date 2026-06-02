@@ -477,23 +477,21 @@ export class IngestQueue {
   private consumersDone: Promise<void> | null = null;
 
   startConsumer(collectorUrl: string): void {
-    const loops = Promise.all(
-      Array.from({ length: this.config.consumerConcurrency }, (_, index) =>
-        this.consumeLoop(collectorUrl, index + 1),
-      ),
+    const loops = Array.from({ length: this.config.consumerConcurrency }, (_, index) =>
+      this.consumeLoop(collectorUrl, index + 1),
     );
-    // Surface an unexpected loop failure as a non-zero exit.
-    loops.catch((err: unknown) => {
-      this.logger.error({ err }, "ingest queue consumer stopped unexpectedly");
-      process.exitCode = 1;
-    });
-    // Settles (never rejects) once every loop has exited, so stop() can await it
-    // without risking an unhandled rejection when a loop fails and stop() is
-    // never called. The failure itself is logged + flagged via loops.catch above.
-    this.consumersDone = loops.then(
-      () => undefined,
-      () => undefined,
-    );
+    // Surface an unexpected loop failure promptly: log it and flag a non-zero exit.
+    for (const loop of loops) {
+      loop.catch((err: unknown) => {
+        this.logger.error({ err }, "ingest queue consumer stopped unexpectedly");
+        process.exitCode = 1;
+      });
+    }
+    // Resolve only once EVERY loop has settled. allSettled neither short-circuits
+    // on the first rejection (so stop() never returns while a sibling loop is
+    // still draining) nor rejects itself (so there is no unhandled rejection when
+    // a loop fails and stop() is never called).
+    this.consumersDone = Promise.allSettled(loops).then(() => undefined);
   }
 
   /**
