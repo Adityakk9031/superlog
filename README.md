@@ -109,4 +109,4 @@ pnpm typecheck
 
 ## License
 
-License selection is pending before the public launch.
+Superlog is licensed under the [Apache License 2.0](./LICENSE.md).

@@ -1,6 +1,7 @@
 {
   "name": "superlog",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@9.12.0",
   "engines": {
