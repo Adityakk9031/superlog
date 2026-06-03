@@ -36,11 +36,16 @@ export function WidgetForm({
   // regenerated from the form.
   existingTitle?: string;
   submitting: boolean;
-  onSubmit: (result: { type: WidgetType; config: WidgetConfig; title: string }) => void;
+  onSubmit: (result: {
+    type: WidgetType;
+    config: WidgetConfig;
+    title: string;
+  }) => void | Promise<void>;
   onClose: () => void;
 }) {
   const [form, setForm] = useState<WidgetFormState>(initial);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const update = (patch: Partial<WidgetFormState>) => setForm((f) => ({ ...f, ...patch }));
 
   const { kind, source } = form;
@@ -95,9 +100,17 @@ export function WidgetForm({
 
   const disabled = (isMetric && !form.metricName) || (isNote && !form.markdown.trim());
 
-  const submit = () => {
+  const submit = async () => {
     if (disabled) return;
-    onSubmit({ type, config, title });
+    setError(null);
+    try {
+      // The parent's onSubmit awaits its mutation and only closes the modal on
+      // success — so a failed save keeps the form open with the error shown
+      // instead of becoming an unhandled rejection.
+      await onSubmit({ type, config, title });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save widget");
+    }
   };
 
   const sourceOptions = isChart
@@ -333,7 +346,7 @@ export function WidgetForm({
                       <AddFilter
                         projectId={projectId}
                         range={range}
-                        source={isChart && source !== "metric" ? source : undefined}
+                        source={source === "metric" ? undefined : source}
                         existing={form.attrs}
                         onClose={() => setFilterOpen(false)}
                         onPick={(f) => {
@@ -368,6 +381,11 @@ export function WidgetForm({
           </div>
 
           <div className="mt-6 flex items-center justify-end gap-3 border-t border-border pt-4">
+            {error && (
+              <span className="mr-auto font-mono text-[11px] text-danger" role="alert">
+                {error}
+              </span>
+            )}
             <Btn variant="ghost" onClick={onClose}>
               cancel
             </Btn>
