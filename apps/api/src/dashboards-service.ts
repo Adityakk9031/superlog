@@ -51,6 +51,7 @@ export const dashboardWidgetCreateSchema = z.object({
 });
 
 export const dashboardWidgetUpdateSchema = z.object({
+  type: dashboardWidgetTypeSchema.optional(),
   title: z.string().min(1).max(200).optional(),
   config: dashboardWidgetConfigSchema.optional(),
   layout: dashboardWidgetLayoutSchema.optional(),
@@ -184,6 +185,7 @@ export async function updateDashboardWidget(
   const updated = await db
     .update(schema.dashboardWidgets)
     .set({
+      ...(input.type !== undefined ? { type: input.type } : {}),
       ...(input.title !== undefined ? { title: input.title } : {}),
       ...(input.config !== undefined ? { config: input.config } : {}),
       ...(input.layout !== undefined ? { layout: input.layout } : {}),

@@ -1559,6 +1559,8 @@ export function GroupBySelect({
   value,
   onChange,
   step,
+  shortcut = "g",
+  triggerLabel = "Group by",
 }: {
   projectId: string;
   range: ExploreRange;
@@ -1566,6 +1568,11 @@ export function GroupBySelect({
   value: string;
   onChange: (g: string) => void;
   step?: string;
+  // Pass `false` to suppress the global keyboard shortcut (e.g. when this is
+  // nested inside a modal/popover rather than the Explore toolbar).
+  shortcut?: string | false;
+  // Pass `""` to render just the selected value without a "Group by:" prefix.
+  triggerLabel?: string;
 }) {
   const keys = useExploreAttributeKeys(projectId, range, source);
   const options = useMemo<KeyboardSelectOption[]>(() => {
@@ -1584,10 +1591,10 @@ export function GroupBySelect({
     <div className="flex items-center gap-2">
       <KeyboardSelect
         ariaLabel="group by"
-        shortcut="g"
+        shortcut={shortcut || undefined}
         value={value}
         placeholder="none"
-        triggerLabel="Group by"
+        triggerLabel={triggerLabel}
         options={options}
         searchable
         searchPlaceholder="Search attributes…"

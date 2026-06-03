@@ -113,6 +113,7 @@ export function useUpdateWidget(projectId: string, dashboardId: string) {
       ...patch
     }: {
       id: string;
+      type?: WidgetType;
       title?: string;
       config?: WidgetConfig;
       layout?: WidgetLayout;
