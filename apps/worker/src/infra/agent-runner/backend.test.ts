@@ -56,6 +56,7 @@ test("getAgentRunnerBackend returns the default community backend", async () => 
       linearTicketPolicy: "never",
       linearTicketInstructions: [],
       prPolicy: "never",
+      prBaseBranch: null,
       githubConnected: false,
       telemetryInvestigationHint:
         "When an issue sample includes a session.id attribute, use it to query preceding traces and logs.",
@@ -101,6 +102,7 @@ test("getAgentRunnerBackend returns a built-in disabled backend for community in
         linearTicketPolicy: "never",
         linearTicketInstructions: [],
         prPolicy: "never",
+        prBaseBranch: null,
         githubConnected: false,
         telemetryInvestigationHint:
           "When an issue sample includes a session.id attribute, use it to query preceding traces and logs.",

@@ -1010,12 +1010,17 @@ async function githubRequest<T>(pathname: string, bearerToken: string): Promise<
   return (await res.json()) as T;
 }
 
-async function createInstallationReadToken(installationId: number): Promise<string> {
+type GithubPermission = "read" | "write";
+
+async function createInstallationToken(opts: {
+  installationId: number;
+  permissions: Record<string, GithubPermission>;
+}): Promise<string> {
   const cfg = getGithubAppConfig();
   if (!cfg) throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY are required");
   const appJwt = signGithubAppJwt(cfg.appId, cfg.privateKey);
   const res = await fetch(
-    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    `https://api.github.com/app/installations/${opts.installationId}/access_tokens`,
     {
       method: "POST",
       headers: {
@@ -1025,45 +1030,57 @@ async function createInstallationReadToken(installationId: number): Promise<stri
         "x-github-api-version": "2022-11-28",
         "user-agent": "superlog-api",
       },
-      body: JSON.stringify({ permissions: { contents: "read" } }),
+      body: JSON.stringify({ permissions: opts.permissions }),
     },
   );
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(
-      `github POST /app/installations/${installationId}/access_tokens failed: ${res.status} ${text}`,
+      `github POST /app/installations/${opts.installationId}/access_tokens failed: ${res.status} ${text}`,
     );
   }
   const data = (await res.json()) as { token: string };
   return data.token;
 }
 
+async function createInstallationReadToken(installationId: number): Promise<string> {
+  return createInstallationToken({ installationId, permissions: { contents: "read" } });
+}
+
 async function createInstallationWriteToken(installationId: number): Promise<string> {
-  const cfg = getGithubAppConfig();
-  if (!cfg) throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY are required");
-  const appJwt = signGithubAppJwt(cfg.appId, cfg.privateKey);
+  return createInstallationToken({
+    installationId,
+    permissions: { contents: "write", pull_requests: "write" },
+  });
+}
+
+export async function mergeGithubPullRequest(opts: {
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+  method: "squash" | "merge" | "rebase";
+}): Promise<{ sha: string | null }> {
+  const token = await createInstallationWriteToken(opts.installationId);
   const res = await fetch(
-    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    `https://api.github.com/repos/${opts.repoFullName}/pulls/${opts.prNumber}/merge`,
     {
-      method: "POST",
+      method: "PUT",
       headers: {
         accept: "application/vnd.github+json",
-        authorization: `Bearer ${appJwt}`,
+        authorization: `Bearer ${token}`,
         "content-type": "application/json; charset=utf-8",
         "x-github-api-version": "2022-11-28",
         "user-agent": "superlog-api",
       },
-      body: JSON.stringify({ permissions: { pull_requests: "write" } }),
+      body: JSON.stringify({ merge_method: opts.method }),
     },
   );
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `github POST /app/installations/${installationId}/access_tokens failed: ${res.status} ${text}`,
-    );
+    throw new Error(`github PUT /pulls/${opts.prNumber}/merge failed: ${res.status} ${text}`);
   }
-  const data = (await res.json()) as { token: string };
-  return data.token;
+  const body = (await res.json().catch(() => ({}))) as { sha?: string };
+  return { sha: body.sha ?? null };
 }
 
 export async function closeAgentPullRequestOnGithub(opts: {

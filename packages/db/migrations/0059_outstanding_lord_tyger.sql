@@ -1,0 +1,1 @@
+ALTER TABLE "project_automation_settings" ADD COLUMN "pr_base_branch" text;

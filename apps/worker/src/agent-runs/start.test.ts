@@ -51,6 +51,7 @@ test("startQueuedAgentRunWorkflow starts runner with capped repo candidates", as
     "createRepositoryReadToken:repo-1",
     "buildIssueSummaries",
     "runner.start:1",
+    "prBaseBranch:development",
     "telemetryHint:session.id",
     "startRunning:session-1:1",
     "notifyStarted:1",
@@ -87,6 +88,7 @@ function makeDeps(
     maxRepoResources: 1,
     async start(input) {
       calls.push(`runner.start:${input.repoCandidates.length}`);
+      calls.push(`prBaseBranch:${input.prBaseBranch ?? "repo-default"}`);
       if (input.telemetryInvestigationHint.includes("session.id")) {
         calls.push("telemetryHint:session.id");
       }
@@ -187,6 +189,7 @@ function makeContext(opts: { githubInstalled?: boolean } = {}): AgentRunContext 
     linearTicketPolicy: "on_ready_to_pr",
     linearTicketInstructions: [],
     prPolicy: "on_ready_to_pr",
+    prBaseBranch: "development",
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",
     issueRows: [],

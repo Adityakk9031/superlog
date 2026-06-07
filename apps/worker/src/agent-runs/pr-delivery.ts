@@ -1,4 +1,10 @@
-import { type AgentRunResult, createIncidentLifecycle, db, type schema } from "@superlog/db";
+import {
+  type AgentRunResult,
+  createIncidentLifecycle,
+  db,
+  normalizePrBaseBranch,
+  type schema,
+} from "@superlog/db";
 import { eq } from "drizzle-orm";
 import {
   type AgentRunContext,
@@ -28,6 +34,14 @@ const DEFAULT_COMMIT_AUTHOR = {
 };
 const agentRunLifecycle = createAgentRunLifecycle(db);
 const incidentLifecycle = createIncidentLifecycle(db);
+
+export function resolvePullRequestBaseBranch(
+  ctx: Pick<AgentRunContext, "prBaseBranch">,
+  pr: Pick<schema.AgentRunPr, "baseBranch">,
+): string | null {
+  return normalizePrBaseBranch(ctx.prBaseBranch) ?? normalizePrBaseBranch(pr.baseBranch);
+}
+
 export async function completeWithPullRequest(
   ctx: AgentRunContext,
   result: AgentRunResult,
@@ -123,7 +137,7 @@ export async function completeWithPullRequest(
       repoFullName: pr.selectedRepoFullName,
       patch,
       branchName,
-      baseBranch: pr.baseBranch,
+      baseBranch: resolvePullRequestBaseBranch(ctx, pr),
       title: prTitle,
       body: prBody,
       commitAuthor:

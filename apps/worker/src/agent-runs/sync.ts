@@ -10,7 +10,7 @@ import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../inte
 import { logger } from "../logger.js";
 import { completeWithoutPullRequest } from "./completion.js";
 import { tryMergeAfterAgentRun } from "./merge.js";
-import { completeWithPullRequest } from "./pr-delivery.js";
+import { completeWithPullRequest, resolvePullRequestBaseBranch } from "./pr-delivery.js";
 import { applyIncidentMetadataFromResult } from "./result-metadata.js";
 import {
   exceededWallClockBudget,
@@ -211,7 +211,8 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
     };
 
     const selectedRepoFullName = snapshot.result?.pr?.selectedRepoFullName ?? null;
-    const baseBranch = snapshot.result?.pr?.baseBranch ?? null;
+    const pr = snapshot.result?.pr ?? null;
+    const baseBranch = pr ? resolvePullRequestBaseBranch(ctx, pr) : null;
     if (selectedRepoFullName) {
       baseUpdate.selectedRepoFullName = selectedRepoFullName;
     }

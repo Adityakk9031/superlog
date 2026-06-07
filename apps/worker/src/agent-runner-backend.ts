@@ -38,6 +38,7 @@ export type AgentRunnerStartInput = {
   linearTicketPolicy: LinearTicketPolicy;
   linearTicketInstructions: LinearTicketInstruction[];
   prPolicy: PrPolicy;
+  prBaseBranch: string | null;
   githubConnected: boolean;
   telemetryInvestigationHint: string;
   customInstructions: string;

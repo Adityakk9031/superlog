@@ -67,6 +67,7 @@ type DashboardVars = { userId: string; orgId: string | null };
 async function getAutomergeForProject(projectId: string): Promise<{
   automerge_fix_prs: schema.AutoMergePolicy;
   automerge_method: schema.AutoMergeMethod;
+  pr_base_branch: string | null;
 }> {
   const row = await db.query.projectAutomationSettings.findFirst({
     where: eq(schema.projectAutomationSettings.projectId, projectId),
@@ -74,7 +75,22 @@ async function getAutomergeForProject(projectId: string): Promise<{
   return {
     automerge_fix_prs: row?.autoMergeFixPrs ?? "never",
     automerge_method: row?.autoMergeMethod ?? "squash",
+    pr_base_branch: schema.normalizePrBaseBranch(row?.prBaseBranch),
   };
+}
+
+function parsePrBaseBranch(input: unknown): string | null | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+  if (typeof input !== "string") return undefined;
+  const branch = schema.normalizePrBaseBranch(input);
+  if (branch && !schema.isValidPrBaseBranch(branch)) {
+    throw new HTTPException(400, {
+      message:
+        "pr_base_branch must be a valid Git branch name, or blank to use the repository default",
+    });
+  }
+  return branch;
 }
 
 // Shared response stubs so individual routes don't repeat themselves.
@@ -238,6 +254,9 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
           ...(body.automerge_method !== undefined
             ? { autoMergeMethod: body.automerge_method }
             : {}),
+          ...(body.pr_base_branch !== undefined
+            ? { prBaseBranch: parsePrBaseBranch(body.pr_base_branch) }
+            : {}),
         })
         .onConflictDoNothing({ target: schema.projectAutomationSettings.projectId });
 
@@ -260,6 +279,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
         slug: project.slug,
         automerge_fix_prs: automerge.automerge_fix_prs,
         automerge_method: automerge.automerge_method,
+        pr_base_branch: automerge.pr_base_branch,
       };
 
       if (!body.mint_ingest_key) {
@@ -317,6 +337,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
             created_at: p.createdAt.toISOString(),
             automerge_fix_prs: auto?.autoMergeFixPrs ?? "never",
             automerge_method: auto?.autoMergeMethod ?? "squash",
+            pr_base_branch: schema.normalizePrBaseBranch(auto?.prBaseBranch),
           };
         }),
       });
@@ -351,6 +372,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
           created_at: project.createdAt.toISOString(),
           automerge_fix_prs: automerge.automerge_fix_prs,
           automerge_method: automerge.automerge_method,
+          pr_base_branch: automerge.pr_base_branch,
         },
       });
     },
@@ -405,7 +427,12 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
         updatedProject = row;
       }
 
-      if (body.automerge_fix_prs !== undefined || body.automerge_method !== undefined) {
+      const prBaseBranch = parsePrBaseBranch(body.pr_base_branch);
+      if (
+        body.automerge_fix_prs !== undefined ||
+        body.automerge_method !== undefined ||
+        prBaseBranch !== undefined
+      ) {
         // Upsert so a project that somehow lacks an automation row still ends
         // up with one carrying the requested values; non-provided fields fall
         // back to schema defaults on insert and stay untouched on update.
@@ -420,6 +447,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
             ...(body.automerge_method !== undefined
               ? { autoMergeMethod: body.automerge_method }
               : {}),
+            ...(prBaseBranch !== undefined ? { prBaseBranch } : {}),
             updatedAt,
           })
           .onConflictDoUpdate({
@@ -431,6 +459,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
               ...(body.automerge_method !== undefined
                 ? { autoMergeMethod: body.automerge_method }
                 : {}),
+              ...(prBaseBranch !== undefined ? { prBaseBranch } : {}),
               updatedAt,
             },
           });
@@ -446,6 +475,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
             slug: projectPatch.slug !== undefined,
             automerge_fix_prs: body.automerge_fix_prs !== undefined,
             automerge_method: body.automerge_method !== undefined,
+            pr_base_branch: prBaseBranch !== undefined,
           },
         },
         "project updated via management api",
@@ -459,6 +489,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
           created_at: updatedProject.createdAt.toISOString(),
           automerge_fix_prs: automerge.automerge_fix_prs,
           automerge_method: automerge.automerge_method,
+          pr_base_branch: automerge.pr_base_branch,
         },
       });
     },

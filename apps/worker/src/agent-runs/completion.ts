@@ -1,7 +1,14 @@
-import { type AgentRunResult, createIncidentLifecycle, db, schema } from "@superlog/db";
+import {
+  type AgentRunResult,
+  closeIncidentOpenPullRequestsAfterResolution,
+  createIncidentLifecycle,
+  db,
+  schema,
+} from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
+import { closeAgentPullRequestOnGithub } from "../github-app.js";
 import { FIXED_IN_CURRENT_CODE_COOLDOWN_MS } from "../incident-cooldown.js";
 import {
   completedNoiseReason,
@@ -14,7 +21,6 @@ import {
   postIncidentThreadMessage,
   updateIncidentMainMessage,
 } from "../infra/slack/incident-messages.js";
-import { closeOpenPullRequestsForResolvedIncident } from "../incidents/resolution-side-effects.js";
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
 import { recordFiledLinearTicket } from "./deliverable-records.js";
@@ -23,6 +29,30 @@ import { isAlertIncident, truncateSlackText } from "./result-metadata.js";
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const agentRunLifecycle = createAgentRunLifecycle(db);
 const incidentLifecycle = createIncidentLifecycle(db);
+
+async function closeOpenPullRequestsForResolvedIncident(incidentId: string): Promise<void> {
+  await closeIncidentOpenPullRequestsAfterResolution({
+    incidentId,
+    closePullRequest: (pr) =>
+      closeAgentPullRequestOnGithub({
+        installationId: pr.githubInstallationId,
+        repoFullName: pr.repoFullName,
+        prNumber: pr.prNumber,
+      }),
+    onCloseFailure: ({ pr, error }) =>
+      logger.warn(
+        {
+          scope: "incident-resolution-side-effects",
+          incident_id: incidentId,
+          agent_pr_id: pr.id,
+          repo: pr.repoFullName,
+          pr_number: pr.prNumber,
+          error,
+        },
+        "failed to close incident PR after resolve",
+      ),
+  });
+}
 
 async function resolveIncidentFromAgentRunConclusion(
   ctx: AgentRunContext,

@@ -1,14 +1,33 @@
-import { db, schema } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
-import { closeAgentPullRequestOnGithub } from "../github-app.js";
-import { logger } from "../logger.js";
+import type { DB } from "./client.js";
+import * as schema from "./schema.js";
 
-const log = logger.child({ scope: "incident-resolution-side-effects" });
+export type IncidentOpenPullRequestToClose = {
+  id: string;
+  githubInstallationId: number;
+  repoFullName: string;
+  prNumber: number;
+};
 
-export async function closeOpenPullRequestsForResolvedIncident(
-  incidentId: string,
-): Promise<{ closedPullRequestCount: number; failedPullRequestCount: number }> {
-  const rows = await db
+export type CloseIncidentPullRequest = (
+  pr: IncidentOpenPullRequestToClose,
+) => Promise<{ ok: true } | { ok: false; error: string }>;
+
+export type CloseIncidentOpenPullRequestsResult = {
+  closedPullRequestCount: number;
+  failedPullRequestCount: number;
+};
+
+export async function closeIncidentOpenPullRequestsAfterResolution(opts: {
+  incidentId: string;
+  closePullRequest: CloseIncidentPullRequest;
+  database?: DB;
+  now?: () => Date;
+  onCloseFailure?: (input: { pr: IncidentOpenPullRequestToClose; error: string }) => void;
+}): Promise<CloseIncidentOpenPullRequestsResult> {
+  const database = opts.database ?? (await import("./client.js")).db;
+  const now = opts.now ?? (() => new Date());
+  const rows = await database
     .select({
       id: schema.agentPullRequests.id,
       repoFullName: schema.agentPullRequests.repoFullName,
@@ -22,7 +41,7 @@ export async function closeOpenPullRequestsForResolvedIncident(
     )
     .where(
       and(
-        eq(schema.agentPullRequests.incidentId, incidentId),
+        eq(schema.agentPullRequests.incidentId, opts.incidentId),
         eq(schema.agentPullRequests.state, "open"),
       ),
     );
@@ -30,27 +49,15 @@ export async function closeOpenPullRequestsForResolvedIncident(
   let closedPullRequestCount = 0;
   let failedPullRequestCount = 0;
   for (const pr of rows) {
-    const closedAt = new Date();
-    const result = await closeAgentPullRequestOnGithub({
-      installationId: pr.githubInstallationId,
-      repoFullName: pr.repoFullName,
-      prNumber: pr.prNumber,
-    });
+    const closedAt = now();
+    const result = await opts.closePullRequest(pr);
     if (!result.ok) {
       failedPullRequestCount += 1;
-      log.warn(
-        {
-          incident_id: incidentId,
-          agent_pr_id: pr.id,
-          repo: pr.repoFullName,
-          pr_number: pr.prNumber,
-          error: result.error,
-        },
-        "failed to close incident PR after resolve",
-      );
+      opts.onCloseFailure?.({ pr, error: result.error });
       continue;
     }
-    await db
+
+    await database
       .update(schema.agentPullRequests)
       .set({
         state: "closed",
@@ -61,7 +68,7 @@ export async function closeOpenPullRequestsForResolvedIncident(
       .where(
         and(eq(schema.agentPullRequests.id, pr.id), eq(schema.agentPullRequests.state, "open")),
       );
-    await db
+    await database
       .insert(schema.agentPrEvents)
       .values({
         agentPrId: pr.id,
@@ -74,5 +81,6 @@ export async function closeOpenPullRequestsForResolvedIncident(
       .onConflictDoNothing();
     closedPullRequestCount += 1;
   }
+
   return { closedPullRequestCount, failedPullRequestCount };
 }

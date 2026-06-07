@@ -1448,6 +1448,7 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
     linearTicketPolicy: "on_ready_to_pr",
     linearTicketInstructions: [],
     prPolicy: "on_ready_to_pr",
+    prBaseBranch: null,
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",
     issueFilterConfig: EMPTY_ISSUE_FILTER_CONFIG,
@@ -1604,6 +1605,11 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
                 When on, the agent opens a pull request whenever it lands on a concrete code area.
                 When off, the agent only surfaces findings — no PRs.
               </p>
+              <PrBaseBranchField
+                value={data.prBaseBranch}
+                disabled={!downstreamEligible || data.prPolicy === "never" || save.isPending}
+                onSave={(v) => patch({ prBaseBranch: v })}
+              />
               <AutoMergeControls
                 policy={data.autoMergeFixPrs}
                 method={data.autoMergeMethod}
@@ -1615,6 +1621,47 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
         </FlowNode>
       </div>
     </Tile>
+  );
+}
+
+function PrBaseBranchField({
+  value,
+  disabled,
+  onSave,
+}: {
+  value: string | null;
+  disabled: boolean;
+  onSave: (value: string | null) => void;
+}) {
+  const [draft, setDraft] = useState(value ?? "");
+  useEffect(() => setDraft(value ?? ""), [value]);
+  const normalized = draft.trim();
+  const dirty = normalized !== (value ?? "");
+
+  return (
+    <div className="space-y-2">
+      <FieldLabel>PR target branch</FieldLabel>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Input
+          value={draft}
+          disabled={disabled}
+          onChange={(e) => setDraft(e.target.value.slice(0, 200))}
+          placeholder="Use repository default"
+          className="font-mono text-[12.5px]"
+        />
+        <Btn
+          size="sm"
+          variant="secondary"
+          disabled={disabled || !dirty}
+          onClick={() => onSave(normalized || null)}
+        >
+          Save
+        </Btn>
+      </div>
+      <p className="text-[12px] text-muted">
+        Leave blank for the repo default branch, or set a branch like development.
+      </p>
+    </div>
   );
 }
 

@@ -26,6 +26,7 @@
     "@opentelemetry/resources": "^2.7.0",
     "@opentelemetry/sdk-trace-web": "^2.7.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@pierre/diffs": "^1.2.7",
     "@radix-ui/react-scroll-area": "^1.2.10",
     "@tanstack/react-query": "^5.62.8",
     "@types/react-grid-layout": "^2.1.0",

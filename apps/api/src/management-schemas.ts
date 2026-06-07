@@ -1,3 +1,4 @@
+import { PR_BASE_BRANCH_MAX_LENGTH } from "@superlog/db/schema";
 import { z } from "zod";
 
 // Slug rules: lowercase alphanumeric + dashes, max 40 chars.
@@ -13,6 +14,14 @@ export const automergePolicySchema = z
 export const automergeMethodSchema = z
   .enum(["squash", "merge", "rebase"])
   .describe("Merge strategy used for auto-merge.");
+
+export const prBaseBranchSchema = z
+  .string()
+  .max(PR_BASE_BRANCH_MAX_LENGTH)
+  .nullable()
+  .describe(
+    "Target branch for agent-opened PRs. Null or blank uses the repository default branch.",
+  );
 
 const slugSchema = z
   .string()
@@ -44,6 +53,7 @@ export const createProjectInputSchema = z.object({
     .describe("If true, mint an initial ingest key alongside the project."),
   automerge_fix_prs: automergePolicySchema.optional(),
   automerge_method: automergeMethodSchema.optional(),
+  pr_base_branch: prBaseBranchSchema.optional(),
 });
 
 export const updateProjectInputSchema = z
@@ -52,6 +62,7 @@ export const updateProjectInputSchema = z
     slug: slugSchema.optional(),
     automerge_fix_prs: automergePolicySchema.optional(),
     automerge_method: automergeMethodSchema.optional(),
+    pr_base_branch: prBaseBranchSchema.optional(),
   })
   .describe("Partial update. Only fields present in the body are written.");
 
@@ -135,6 +146,7 @@ export const projectSchema = z
     created_at: z.string().datetime().optional(),
     automerge_fix_prs: automergePolicySchema,
     automerge_method: automergeMethodSchema,
+    pr_base_branch: prBaseBranchSchema,
   })
   .describe("Project metadata.");
 
@@ -147,9 +159,9 @@ export const mintedApiKeySchema = z.object({
 
 export const createProjectResponseSchema = z.object({
   project: projectSchema,
-  api_key: mintedApiKeySchema.nullable().describe(
-    "Present when mint_ingest_key is true (default); null otherwise.",
-  ),
+  api_key: mintedApiKeySchema
+    .nullable()
+    .describe("Present when mint_ingest_key is true (default); null otherwise."),
 });
 
 export const projectListResponseSchema = z.object({

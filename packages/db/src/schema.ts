@@ -467,6 +467,12 @@ export const incidents = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     service: text("service"),
+    // Deployment environment (e.g. "production", "staging") of the error that
+    // opened the incident, denormalized from the triggering issue's telemetry
+    // resource attributes (same pattern as `service`). Nullable: many setups
+    // don't tag a `deployment.environment` attribute, and pre-this-column rows
+    // never captured it.
+    environment: text("environment"),
     title: text("title").notNull(),
     // Human-friendly per-project name (e.g. "squishy-narwhal"). Stable for the life of the incident.
     codename: text("codename").notNull().default(""),
@@ -671,6 +677,7 @@ export const projectAutomationSettings = pgTable(
       .$type<"never" | "on_ready_to_pr" | "always">()
       .notNull()
       .default("on_ready_to_pr"),
+    prBaseBranch: text("pr_base_branch"),
     autoMergeFixPrs: text("auto_merge_fix_prs")
       .$type<"never" | "when_checks_pass" | "immediately">()
       .notNull()
@@ -1172,6 +1179,20 @@ export const slackInstallations = pgTable(
     channelName: text("channel_name"),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    // Set on every (re)authorization — i.e. whenever Slack mints a fresh bot
+    // token for this install. The upsert refreshes the token in place on
+    // reinstall, so `createdAt` does NOT track token-refresh recency;
+    // `installedAt` does. A workspace installed into several projects owns one
+    // non-revoked row per project but Slack keeps only the most-recently-minted
+    // bot token live, so when we must pick by team the highest `installedAt`
+    // wins. (Incident/proposal flows should still prefer the pinned install.)
+    //
+    // Nullable on purpose: rows that predate this column have no recorded
+    // refresh time (and `createdAt` is itself unreliable for in-place token
+    // refreshes), so we leave them NULL and `coalesce(installedAt, createdAt)`
+    // at query time rather than stamping every legacy row with the same
+    // migration timestamp. Every write below sets it explicitly.
+    installedAt: timestamp("installed_at", { withTimezone: true }),
   },
   (t) => ({
     projectTeamUniq: uniqueIndex("slack_installations_project_team_idx").on(t.projectId, t.teamId),
@@ -1325,6 +1346,25 @@ export type LinearTicketPolicy = "never" | "on_ready_to_pr" | "always";
 export type PrPolicy = "never" | "on_ready_to_pr" | "always";
 export type AutoMergePolicy = "never" | "when_checks_pass" | "immediately";
 export type AutoMergeMethod = "squash" | "merge" | "rebase";
+export const PR_BASE_BRANCH_MAX_LENGTH = 200;
+
+export function normalizePrBaseBranch(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function isValidPrBaseBranch(value: string): boolean {
+  const branch = normalizePrBaseBranch(value);
+  if (!branch) return true;
+  if (branch.length > PR_BASE_BRANCH_MAX_LENGTH) return false;
+  if (branch === "@" || branch.startsWith("/") || branch.endsWith("/")) return false;
+  if (branch.endsWith(".") || branch.includes("..") || branch.includes("//")) return false;
+  if (branch.includes("@{")) return false;
+  if (/[\s~^:?*[\\\]\x00-\x1f\x7f]/.test(branch)) return false;
+  return branch
+    .split("/")
+    .every((part) => part && !part.startsWith(".") && !part.endsWith(".lock"));
+}
 
 export type LinearTicketInstruction = {
   id: string;

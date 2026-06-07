@@ -90,7 +90,13 @@ export type {
   WebhookEndpoint,
   WebhookEventType,
 } from "./schema.js";
-export { agentRunFailureCategory, WEBHOOK_EVENT_TYPES } from "./schema.js";
+export {
+  agentRunFailureCategory,
+  isValidPrBaseBranch,
+  normalizePrBaseBranch,
+  PR_BASE_BRANCH_MAX_LENGTH,
+  WEBHOOK_EVENT_TYPES,
+} from "./schema.js";
 export {
   enqueueRedelivery,
   enqueueTestDelivery,
@@ -123,6 +129,12 @@ export {
   type ResolveIncidentInput,
   type ResolveIncidentResult,
 } from "./resolve-incident.js";
+export {
+  closeIncidentOpenPullRequestsAfterResolution,
+  type CloseIncidentOpenPullRequestsResult,
+  type CloseIncidentPullRequest,
+  type IncidentOpenPullRequestToClose,
+} from "./incident-pr-resolution.js";
 export {
   encryptIntegrationSecret,
   decryptIntegrationSecret,
@@ -161,3 +173,4 @@ export type {
   LoopsWelcomeFlowInput,
   SendLoopsResult,
 } from "./loops.js";
+export { environmentFromResourceAttrs } from "./telemetry-environment.js";

@@ -230,6 +230,7 @@ async function startRunnerSession(
         linearTicketPolicy: ctx.linearTicketPolicy,
         linearTicketInstructions: ctx.linearTicketInstructions,
         prPolicy: ctx.prPolicy,
+        prBaseBranch: ctx.prBaseBranch,
         githubConnected: ctx.githubInstalls.length > 0,
         telemetryInvestigationHint: TELEMETRY_INVESTIGATION_HINT,
         customInstructions: ctx.customInstructions,

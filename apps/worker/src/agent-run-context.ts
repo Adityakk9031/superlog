@@ -38,6 +38,7 @@ export type AgentRunContext = {
   linearTicketPolicy: schema.LinearTicketPolicy;
   linearTicketInstructions: schema.LinearTicketInstruction[];
   prPolicy: schema.PrPolicy;
+  prBaseBranch: string | null;
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
   issueRows: Array<schema.Issue>;
@@ -53,6 +54,7 @@ export async function getProjectAutomation(projectId: string): Promise<{
   linearTicketPolicy: schema.LinearTicketPolicy;
   linearTicketInstructions: schema.LinearTicketInstruction[];
   prPolicy: schema.PrPolicy;
+  prBaseBranch: string | null;
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
   issueFilterConfig: schema.IssueFilterConfig;
@@ -70,6 +72,7 @@ export async function getProjectAutomation(projectId: string): Promise<{
     linearTicketPolicy: row?.linearTicketPolicy ?? "on_ready_to_pr",
     linearTicketInstructions: row?.linearTicketInstructions ?? [],
     prPolicy: row?.prPolicy ?? "on_ready_to_pr",
+    prBaseBranch: schema.normalizePrBaseBranch(row?.prBaseBranch),
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
     autoMergeMethod: row?.autoMergeMethod ?? "squash",
     issueFilterConfig: row?.issueFilterConfig ?? schema.EMPTY_ISSUE_FILTER_CONFIG,
@@ -130,6 +133,7 @@ export async function loadAgentRunContext(
     linearTicketPolicy: automation.linearTicketPolicy,
     linearTicketInstructions: automation.linearTicketInstructions,
     prPolicy: automation.prPolicy,
+    prBaseBranch: automation.prBaseBranch,
     autoMergeFixPrs: automation.autoMergeFixPrs,
     autoMergeMethod: automation.autoMergeMethod,
     issueRows,

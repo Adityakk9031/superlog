@@ -1,16 +1,10 @@
+import type { CloseIncidentOpenPullRequestsResult, CloseIncidentPullRequest } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { logger } from "../logger.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 
 const log = logger.child({ scope: "incident-resolution-side-effects" });
-
-export type ResolvedIncidentOpenPullRequest = {
-  id: string;
-  githubInstallationId: number;
-  repoFullName: string;
-  prNumber: number;
-};
 
 export type ResolvedIncidentSideEffectIncident = {
   id: string;
@@ -24,11 +18,7 @@ export type ResolvedIncidentSlackRoot = {
 };
 
 export type ResolvedIncidentSideEffectDeps = {
-  listOpenPullRequests(incidentId: string): Promise<ResolvedIncidentOpenPullRequest[]>;
-  closePullRequest(
-    pr: ResolvedIncidentOpenPullRequest,
-  ): Promise<{ ok: true } | { ok: false; error: string }>;
-  markPullRequestClosed(pr: ResolvedIncidentOpenPullRequest, closedAt: Date): Promise<void>;
+  closeIncidentPullRequests(incidentId: string): Promise<CloseIncidentOpenPullRequestsResult>;
   updateSlackRootMessage(input: {
     incident: ResolvedIncidentSideEffectIncident;
     text: string;
@@ -40,31 +30,8 @@ export async function runResolvedIncidentSideEffects(opts: {
   incident: ResolvedIncidentSideEffectIncident;
   projectName: string;
   deps: ResolvedIncidentSideEffectDeps;
-}): Promise<{ closedPullRequestCount: number; failedPullRequestCount: number }> {
-  const openPullRequests = await opts.deps.listOpenPullRequests(opts.incident.id);
-  let closedPullRequestCount = 0;
-  let failedPullRequestCount = 0;
-
-  for (const pr of openPullRequests) {
-    const closedAt = new Date();
-    const result = await opts.deps.closePullRequest(pr);
-    if (!result.ok) {
-      failedPullRequestCount += 1;
-      log.warn(
-        {
-          incident_id: opts.incident.id,
-          agent_pr_id: pr.id,
-          repo: pr.repoFullName,
-          pr_number: pr.prNumber,
-          error: result.error,
-        },
-        "failed to close incident PR after resolve",
-      );
-      continue;
-    }
-    await opts.deps.markPullRequestClosed(pr, closedAt);
-    closedPullRequestCount += 1;
-  }
+}): Promise<CloseIncidentOpenPullRequestsResult> {
+  const closed = await opts.deps.closeIncidentPullRequests(opts.incident.id);
 
   const slackRoot = buildResolvedIncidentSlackRoot({
     incident: opts.incident,
@@ -76,13 +43,13 @@ export async function runResolvedIncidentSideEffects(opts: {
     blocks: slackRoot.blocks,
   });
 
-  return { closedPullRequestCount, failedPullRequestCount };
+  return closed;
 }
 
 export async function runResolvedIncidentSideEffectsForIncident(opts: {
   incidentId: string;
-  closePullRequest: ResolvedIncidentSideEffectDeps["closePullRequest"];
-}): Promise<{ closedPullRequestCount: number; failedPullRequestCount: number } | null> {
+  closePullRequest: CloseIncidentPullRequest;
+}): Promise<CloseIncidentOpenPullRequestsResult | null> {
   const { db, schema } = await import("@superlog/db");
   const incident = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, opts.incidentId),
@@ -142,13 +109,28 @@ export function buildResolvedIncidentSlackRoot(opts: {
 }
 
 export function createResolvedIncidentSideEffectDeps(opts: {
-  closePullRequest: ResolvedIncidentSideEffectDeps["closePullRequest"];
+  closePullRequest: CloseIncidentPullRequest;
   updateSlackRootMessage?: ResolvedIncidentSideEffectDeps["updateSlackRootMessage"];
 }): ResolvedIncidentSideEffectDeps {
   return {
-    listOpenPullRequests: listOpenPullRequestsForIncident,
-    closePullRequest: opts.closePullRequest,
-    markPullRequestClosed: markPullRequestClosedForResolvedIncident,
+    closeIncidentPullRequests: async (incidentId) => {
+      const { closeIncidentOpenPullRequestsAfterResolution } = await import("@superlog/db");
+      return closeIncidentOpenPullRequestsAfterResolution({
+        incidentId,
+        closePullRequest: opts.closePullRequest,
+        onCloseFailure: ({ pr, error }) =>
+          log.warn(
+            {
+              incident_id: incidentId,
+              agent_pr_id: pr.id,
+              repo: pr.repoFullName,
+              pr_number: pr.prNumber,
+              error,
+            },
+            "failed to close incident PR after resolve",
+          ),
+      });
+    },
     updateSlackRootMessage: opts.updateSlackRootMessage ?? updateResolvedIncidentSlackRootMessage,
   };
 }
@@ -200,57 +182,4 @@ export async function updateResolvedIncidentSlackRootMessage(input: {
   } catch (err) {
     log.warn({ err, incident_id: input.incident.id }, "resolved incident Slack root update threw");
   }
-}
-
-async function listOpenPullRequestsForIncident(
-  incidentId: string,
-): Promise<ResolvedIncidentOpenPullRequest[]> {
-  const { db, schema } = await import("@superlog/db");
-  const rows = await db
-    .select({
-      id: schema.agentPullRequests.id,
-      repoFullName: schema.agentPullRequests.repoFullName,
-      prNumber: schema.agentPullRequests.prNumber,
-      githubInstallationId: schema.githubInstallations.installationId,
-    })
-    .from(schema.agentPullRequests)
-    .innerJoin(
-      schema.githubInstallations,
-      eq(schema.githubInstallations.id, schema.agentPullRequests.installationId),
-    )
-    .where(
-      and(
-        eq(schema.agentPullRequests.incidentId, incidentId),
-        eq(schema.agentPullRequests.state, "open"),
-      ),
-    );
-  return rows;
-}
-
-async function markPullRequestClosedForResolvedIncident(
-  pr: ResolvedIncidentOpenPullRequest,
-  closedAt: Date,
-): Promise<void> {
-  const { db, schema } = await import("@superlog/db");
-  await db
-    .update(schema.agentPullRequests)
-    .set({
-      state: "closed",
-      closedAt,
-      lastSyncedAt: closedAt,
-      updatedAt: closedAt,
-    })
-    .where(and(eq(schema.agentPullRequests.id, pr.id), eq(schema.agentPullRequests.state, "open")));
-
-  await db
-    .insert(schema.agentPrEvents)
-    .values({
-      agentPrId: pr.id,
-      kind: "pr_closed",
-      summary: `Closed PR #${pr.prNumber} because the incident was resolved.`,
-      payload: { repoFullName: pr.repoFullName, prNumber: pr.prNumber },
-      providerEventId: `pr_closed:incident_resolved:${pr.id}`,
-      occurredAt: closedAt,
-    })
-    .onConflictDoNothing();
 }
