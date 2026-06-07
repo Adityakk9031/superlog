@@ -8,11 +8,17 @@
 // DATABASE_URL for local/worktree use. supervise/schedule are disabled so this
 // only installs/migrates and does no maintenance or cron work before exiting.
 
-// Preload .env / .env.local so local/worktree runs pick up DATABASE_URL without
-// exporting it manually. No-op in the migrate task, where PG* comes from the
-// task definition (env.ts only loads dotenv; it never validates or throws).
-import "../src/env.js";
+// Fill DATABASE_URL/PG* from .env.local/.env for local/worktree convenience,
+// but NEVER override env already present in the process. The migrate task runs
+// as the schema-owner with PG* injected from the task definition; using
+// override (as src/env.js does for app boot) would let a stray .env file
+// repoint this migration at the wrong database/credentials. dotenv defaults to
+// override:false, so real task env always wins; files only supply what's unset.
+import { config as loadDotenv } from "dotenv";
 import { PgBoss } from "pg-boss";
+
+loadDotenv({ path: ".env.local" });
+loadDotenv();
 
 function dbConfig(): Record<string, unknown> {
   const connectionString = process.env.DATABASE_URL;
