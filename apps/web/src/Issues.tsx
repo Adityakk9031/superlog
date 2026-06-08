@@ -45,6 +45,7 @@ import {
   useUpdateIncident,
 } from "./api.ts";
 import { Btn, Chip } from "./design/ui.tsx";
+import { getIncidentStatusAction } from "./incident-status-action.ts";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
 
 const IncidentPrDiffView = lazy(() => import("./IncidentPrDiffView.tsx"));
@@ -839,11 +840,12 @@ function IncidentDrawerBody({
     );
   }
   const { incident, issues, agentRun, agentRuns, timeline } = q.data;
+  const statusAction = getIncidentStatusAction(incident.status);
 
   function handleToggleStatus() {
     updateIncident.mutate({
       incidentId: incident.id,
-      status: incident.status === "open" ? "resolved" : "open",
+      status: statusAction.targetStatus,
     });
   }
 
@@ -873,6 +875,7 @@ function IncidentDrawerBody({
       onDecideProposal={(proposalId, decision) =>
         decideProposal.mutate({ incidentId: incident.id, proposalId, decision })
       }
+      updateIncidentError={updateIncident.error}
       decidingProposal={decideProposal.isPending}
       updatingIncident={updateIncident.isPending}
       restartingAgentRun={restartAgentRun.isPending}
@@ -1319,6 +1322,7 @@ export function IncidentDetailContent({
   onRestartAgentRun,
   onRetryPrDelivery,
   onDecideProposal,
+  updateIncidentError = null,
   decidingProposal,
   updatingIncident,
   restartingAgentRun = false,
@@ -1338,12 +1342,14 @@ export function IncidentDetailContent({
   onRestartAgentRun?: () => void;
   onRetryPrDelivery?: () => void;
   onDecideProposal?: (proposalId: string, decision: "confirm" | "dismiss") => void;
+  updateIncidentError?: Error | null;
   decidingProposal?: boolean;
   updatingIncident: boolean;
   restartingAgentRun?: boolean;
   retryingPrDelivery?: boolean;
 }) {
   const [detailTab, setDetailTab] = useState<"incident" | "pr">("incident");
+  const statusAction = getIncidentStatusAction(incident.status);
 
   return (
     <div className="space-y-8 p-4">
@@ -1436,14 +1442,19 @@ export function IncidentDetailContent({
           </div>
 
           <Btn
-            variant={incident.status === "open" ? "secondary" : "ghost"}
+            variant={statusAction.variant}
             size="sm"
             onClick={onToggleStatus}
             loading={updatingIncident}
             className="w-full justify-center"
           >
-            {incident.status === "open" ? "Resolve incident" : "Reopen incident"}
+            {statusAction.label}
           </Btn>
+          {updateIncidentError && (
+            <p className="rounded-sm border border-danger/40 bg-danger/10 px-3 py-2 text-[12px] text-danger">
+              Status update failed: {String(updateIncidentError)}
+            </p>
+          )}
         </>
       ) : (
         <IncidentPullRequestPanel projectId={incident.projectId} incidentId={incident.id} />

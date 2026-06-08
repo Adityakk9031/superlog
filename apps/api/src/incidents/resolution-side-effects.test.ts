@@ -53,6 +53,44 @@ test("runResolvedIncidentSideEffects still refreshes Slack when PR closure repor
   assert.deepEqual(calls, ["close-prs", "slack"]);
 });
 
+test("runResolvedIncidentSideEffects still refreshes Slack when PR closure throws", async () => {
+  const calls: string[] = [];
+  const result = await runResolvedIncidentSideEffects({
+    incident: { id: "inc-1", title: "Checkout API timeout", service: null },
+    projectName: "Acme",
+    deps: {
+      closeIncidentPullRequests: async () => {
+        calls.push("close-prs");
+        throw new Error("github unavailable");
+      },
+      updateSlackRootMessage: async () => {
+        calls.push("slack");
+      },
+    },
+  });
+
+  assert.deepEqual(result, { closedPullRequestCount: 0, failedPullRequestCount: 1 });
+  assert.deepEqual(calls, ["close-prs", "slack"]);
+});
+
+test("runResolvedIncidentSideEffects does not fail when Slack refresh throws", async () => {
+  const result = await runResolvedIncidentSideEffects({
+    incident: { id: "inc-1", title: "Checkout API timeout", service: null },
+    projectName: "Acme",
+    deps: {
+      closeIncidentPullRequests: async () => ({
+        closedPullRequestCount: 1,
+        failedPullRequestCount: 0,
+      }),
+      updateSlackRootMessage: async () => {
+        throw new Error("slack unavailable");
+      },
+    },
+  });
+
+  assert.deepEqual(result, { closedPullRequestCount: 1, failedPullRequestCount: 0 });
+});
+
 test("buildResolvedIncidentSlackRoot removes resolve action and keeps feedback action", () => {
   const update = buildResolvedIncidentSlackRoot({
     incident: {

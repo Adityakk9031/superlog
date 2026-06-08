@@ -31,17 +31,30 @@ export async function runResolvedIncidentSideEffects(opts: {
   projectName: string;
   deps: ResolvedIncidentSideEffectDeps;
 }): Promise<CloseIncidentOpenPullRequestsResult> {
-  const closed = await opts.deps.closeIncidentPullRequests(opts.incident.id);
+  let closed: CloseIncidentOpenPullRequestsResult;
+  try {
+    closed = await opts.deps.closeIncidentPullRequests(opts.incident.id);
+  } catch (err) {
+    log.warn({ err, incident_id: opts.incident.id }, "failed to close incident PRs after resolve");
+    closed = { closedPullRequestCount: 0, failedPullRequestCount: 1 };
+  }
 
   const slackRoot = buildResolvedIncidentSlackRoot({
     incident: opts.incident,
     projectName: opts.projectName,
   });
-  await opts.deps.updateSlackRootMessage({
-    incident: opts.incident,
-    text: slackRoot.text,
-    blocks: slackRoot.blocks,
-  });
+  try {
+    await opts.deps.updateSlackRootMessage({
+      incident: opts.incident,
+      text: slackRoot.text,
+      blocks: slackRoot.blocks,
+    });
+  } catch (err) {
+    log.warn(
+      { err, incident_id: opts.incident.id },
+      "failed to update resolved incident Slack root",
+    );
+  }
 
   return closed;
 }
