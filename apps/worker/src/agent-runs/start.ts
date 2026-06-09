@@ -234,6 +234,12 @@ async function startRunnerSession(
         githubConnected: ctx.githubInstalls.length > 0,
         telemetryInvestigationHint: TELEMETRY_INVESTIGATION_HINT,
         customInstructions: ctx.customInstructions,
+        memories: ctx.memories.map((memory) => ({
+          id: memory.id,
+          kind: memory.kind,
+          title: memory.title,
+          body: memory.body,
+        })),
       });
       llmSpan.setAttribute("agent_run.session_id", result.sessionId);
       return result;

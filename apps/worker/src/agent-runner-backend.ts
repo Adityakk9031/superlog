@@ -1,4 +1,5 @@
 import type {
+  AgentMemoryKind,
   AgentRunResult,
   LinearTicketInstruction,
   LinearTicketPolicy,
@@ -25,6 +26,13 @@ export type AgentRunnerIssueSummary = {
   traceContext: string | null;
 };
 
+export type AgentRunnerMemory = {
+  id: string;
+  kind: AgentMemoryKind;
+  title: string;
+  body: string;
+};
+
 export type AgentRunnerStartInput = {
   incidentId: string;
   projectId: string;
@@ -42,6 +50,9 @@ export type AgentRunnerStartInput = {
   githubConnected: boolean;
   telemetryInvestigationHint: string;
   customInstructions: string;
+  // Durable cross-run facts (terminology, infra, feedback lessons) saved by
+  // earlier runs or by users. Injected into the initial prompt in full.
+  memories: AgentRunnerMemory[];
 };
 
 export type AgentRunnerSnapshot = {
