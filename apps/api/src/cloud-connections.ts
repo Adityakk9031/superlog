@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { db, decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -53,7 +53,9 @@ export function cloudConnectConfigFromEnv(
   };
 }
 
-const createSchema = z.object({ region: z.string().min(1) });
+// Region is lowercase letters/digits/hyphens only — it's interpolated into the
+// launch URL's hostname, so reject anything that could redirect the link.
+const createSchema = z.object({ region: z.string().regex(/^[a-z0-9-]{1,32}$/) });
 const verifySchema = z.object({ scrapeRoleArn: z.string().min(1) });
 const callbackSchema = z.object({
   connectionId: z.string().uuid(),
@@ -101,20 +103,43 @@ async function applyVerifyAndUpdate(
     keyVersion: row.externalIdKeyVersion,
   });
   const result = await verifyConnection({ roleArn, externalId }, sts);
-  const [updated] = await db
-    .update(schema.cloudConnections)
-    .set({
-      scrapeRoleArn: roleArn,
-      status: result.status,
-      accountId: result.status === "failed" ? row.accountId : result.accountId,
-      lastVerifiedAt: new Date(),
-      lastError: result.status === "failed" ? result.reason : null,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.cloudConnections.id, row.id))
-    .returning();
-  if (!updated) throw new HTTPException(404, { message: "connection not found" });
-  return updated;
+  const now = new Date();
+
+  return db.transaction(async (tx) => {
+    // Reconnecting a role already active in this project would collide with the
+    // unique (project, scrape_role_arn) index. Revoke the prior active row first
+    // so the reconnect replaces it instead of 500-ing. Only on a real claim —
+    // a failed verify must not revoke a working connection.
+    if (result.status !== "failed") {
+      await tx
+        .update(schema.cloudConnections)
+        .set({ revokedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(schema.cloudConnections.projectId, row.projectId),
+            eq(schema.cloudConnections.scrapeRoleArn, roleArn),
+            ne(schema.cloudConnections.id, row.id),
+            isNull(schema.cloudConnections.revokedAt),
+          ),
+        );
+    }
+    const [updated] = await tx
+      .update(schema.cloudConnections)
+      .set({
+        // On failure keep the existing ARN (don't write a value another active
+        // row holds, which would also collide on the unique index).
+        scrapeRoleArn: result.status === "failed" ? row.scrapeRoleArn : roleArn,
+        status: result.status,
+        accountId: result.status === "failed" ? row.accountId : result.accountId,
+        lastVerifiedAt: now,
+        lastError: result.status === "failed" ? result.reason : null,
+        updatedAt: now,
+      })
+      .where(eq(schema.cloudConnections.id, row.id))
+      .returning();
+    if (!updated) throw new HTTPException(404, { message: "connection not found" });
+    return updated;
+  });
 }
 
 export function mountCloudConnectionsAuthed(

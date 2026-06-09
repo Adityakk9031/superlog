@@ -45,6 +45,25 @@ test("buildConnectQuickCreateUrl builds a CloudFormation quick-create console li
   assert.equal(frag.get("param_IntakeUrl"), "https://intake.example.com/aws/firehose");
 });
 
+test("buildConnectQuickCreateUrl rejects a region that could hijack the hostname", () => {
+  assert.throws(() =>
+    buildConnectQuickCreateUrl({
+      region: "evil.com/x",
+      templateUrl: "https://cfn.example/t.yaml",
+      stackName: "s",
+      params: {},
+    }),
+  );
+  assert.throws(() =>
+    buildConnectQuickCreateUrl({
+      region: "us-west-2.attacker.com",
+      templateUrl: "https://cfn.example/t.yaml",
+      stackName: "s",
+      params: {},
+    }),
+  );
+});
+
 test("parseAccountIdFromRoleArn extracts the account id, null on garbage", () => {
   assert.equal(
     parseAccountIdFromRoleArn("arn:aws:iam::123456789012:role/SuperlogScrape"),

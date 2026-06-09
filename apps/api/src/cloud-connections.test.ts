@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import { randomBytes } from "node:crypto";
 import { after, before, test } from "node:test";
 import { closeDb, db, runMigrations, schema } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import type { StsVerifier } from "./cloud-connections-service.js";
 import { type CloudConnectConfig, mountCloudConnectionsAuthed } from "./cloud-connections.js";
@@ -158,6 +158,49 @@ test("verify with a matching account marks the connection connected", async () =
   assert.equal(body.status, "connected");
   assert.equal(body.accountId, "210987654321");
   assert.equal(body.scrapeRoleArn, roleArn);
+});
+
+test("reconnecting a role already active in the project revokes the old row (no 500)", async () => {
+  const { org, user, project } = await seedProject();
+  const roleArn = "arn:aws:iam::210987654321:role/SuperlogScrapeRole";
+  const app = appFor(user.id, org.id, okSts("210987654321"));
+
+  const connectAndVerify = async () => {
+    const created = await asConn(
+      await app.request(`/api/projects/${project.id}/cloud-connections`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ region: "us-west-2" }),
+      }),
+    );
+    const res = await app.request(
+      `/api/projects/${project.id}/cloud-connections/${created.id}/verify`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scrapeRoleArn: roleArn }),
+      },
+    );
+    return { id: created.id, res };
+  };
+
+  const first = await connectAndVerify();
+  assert.equal(first.res.status, 200);
+
+  // Second connect + verify of the SAME role used to 500 on the unique index.
+  const second = await connectAndVerify();
+  assert.equal(second.res.status, 200);
+  assert.equal((await asConn(second.res)).status, "connected");
+
+  // Exactly one active connection remains (the newest); the old one is revoked.
+  const active = await db.query.cloudConnections.findMany({
+    where: and(
+      eq(schema.cloudConnections.projectId, project.id),
+      isNull(schema.cloudConnections.revokedAt),
+    ),
+  });
+  assert.equal(active.length, 1);
+  assert.equal(active[0]?.id, second.id);
 });
 
 test("verify surfaces a denied assume-role as failed (200, not 500)", async () => {

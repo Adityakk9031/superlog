@@ -29,7 +29,15 @@ export type QuickCreateUrlInput = {
  * The prod account ID is passed as a *parameter value* (not baked into the
  * template), so the committed template stays free of prod specifics.
  */
+/** AWS region codes are lowercase letters, digits, and hyphens — nothing else. */
+export const AWS_REGION_RE = /^[a-z0-9-]{1,32}$/;
+
 export function buildConnectQuickCreateUrl(input: QuickCreateUrlInput): string {
+  // `region` is interpolated into the hostname; reject anything that could break
+  // out of `<region>.console.aws.amazon.com` and point the link at another host.
+  if (!AWS_REGION_RE.test(input.region)) {
+    throw new Error(`invalid region: ${input.region}`);
+  }
   const base = `https://${input.region}.console.aws.amazon.com/cloudformation/home?region=${encodeURIComponent(
     input.region,
   )}`;
