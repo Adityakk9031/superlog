@@ -20,6 +20,11 @@ import {
 } from "./firehose.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
+import {
+  type TelemetrySignal,
+  createIngestSourceFilter,
+  ingestFilterKey,
+} from "./ingest-source-filter.js";
 import { logger } from "./logger.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
 import { Semaphore } from "./semaphore.js";
@@ -48,6 +53,27 @@ const ingestQueue = ingestQueueConfig ? new IngestQueue(ingestQueueConfig, logge
 // verdict is a cached, fail-open in-memory read — never a blocking call on the
 // ingest hot path (see billing/ingest-entitlement.ts).
 const ingestGate = createIngestEntitlementGate({ lookupOrgForProject });
+
+// Per-project ingest source filters (OTLP vs AWS, per signal). Cached + fail-open
+// in-memory read, same as the entitlement gate — a project's toggle ack-drops the
+// disabled telemetry at the edge. Always on; the empty default ingests everything.
+const ingestSourceFilter = createIngestSourceFilter({
+  loadDisabled: async (projectId) => {
+    const rows = await db.query.projectIngestFilters.findMany({
+      where: eq(schema.projectIngestFilters.projectId, projectId),
+      columns: { source: true, signal: true },
+    });
+    return new Set(rows.map((r) => ingestFilterKey(r.source, r.signal)));
+  },
+});
+
+// Map an OTLP ingest path to its telemetry signal for the source filter.
+function otlpSignalForPath(path: string): TelemetrySignal | null {
+  if (path === "/v1/traces") return "traces";
+  if (path === "/v1/logs") return "logs";
+  if (path === "/v1/metrics") return "metrics";
+  return null;
+}
 
 // Bound how many ingest requests buffer/stream their bodies at once. Together
 // with the per-request body cap (INGEST_MAX_BODY_BYTES) and S3 streaming for
@@ -267,6 +293,24 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
     await requestSemaphore.acquire();
 
     try {
+      // Per-project source filter FIRST: if the project turned off its OTLP
+      // source for this signal, ack-drop with a 200 (the drop is the user's
+      // intent). This precedes the quota gate so a disabled source is always a
+      // clean 200, never a 402 the exporter would retry against.
+      const otlpSignal = otlpSignalForPath(path);
+      if (otlpSignal && !ingestSourceFilter.allows(projectId, "otlp", otlpSignal)) {
+        responseStatus = 200;
+        span.setAttribute("ingest.dropped", "source_filtered");
+        logger.info(
+          { path, projectId, signal: otlpSignal },
+          "dropping OTLP ingest; source disabled",
+        );
+        return new Response(new Uint8Array(0), {
+          status: 200,
+          headers: { "content-type": "application/x-protobuf" },
+        });
+      }
+
       // Free-tier hard-block: if the org has exhausted its monthly allowance for
       // this signal, drop with a non-retryable 4xx (402) so OTLP exporters stop
       // sending rather than retry-storm. Cached + fail-open, so this is a cheap
@@ -512,6 +556,19 @@ async function forwardFirehose(
       const projectId = await resolveProjectIdForIngestKey(key);
       if (!projectId) return fail(401, "invalid api key");
       span.setAttribute("tenant.project_id", projectId);
+
+      // Per-project source filter FIRST: if the project turned off its AWS
+      // source for this signal, ack-drop with a 200 success ack so Firehose
+      // treats it as delivered and doesn't retry into the customer's error
+      // bucket. This precedes the quota gate so disabling a source always wins
+      // over a 402 — otherwise a disabled-AND-over-quota stream would retry-storm
+      // and error-bucket, the exact outcome turning the source off should avoid.
+      if (!ingestSourceFilter.allows(projectId, "aws", signal)) {
+        span.setAttribute("ingest.dropped", "source_filtered");
+        span.setAttribute("firehose.result", "dropped");
+        logger.info({ signal, projectId, requestId }, "dropping firehose batch; source disabled");
+        return c.json(firehoseResponseBody(requestId), 200);
+      }
 
       // Free-tier hard-block, same gate the OTLP path enforces — otherwise an
       // over-quota org could keep streaming CloudWatch metrics/logs through
