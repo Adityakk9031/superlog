@@ -195,6 +195,7 @@ export {
   buildLoopsContactPayload,
   buildLoopsWelcomeEventPayload,
   fetchLoopsLifecycleForUserProject,
+  fetchOrgMemberContacts,
   sendLoopsWelcomeFlow,
   syncLoopsContactForUserProject,
   syncLoopsContactsForOrg,

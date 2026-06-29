@@ -2,7 +2,7 @@
 // Postgres project→org lookup + cursor store, the Autumn track() call, and the
 // interval-gated ticker for createWorkerTick. Pure orchestration lives in
 // usage-metering.ts.
-import { type ClickHouseClient } from "@clickhouse/client";
+import type { ClickHouseClient } from "@clickhouse/client";
 import { type DB, db as defaultDb, schema } from "@superlog/db";
 import { inArray } from "drizzle-orm";
 import {

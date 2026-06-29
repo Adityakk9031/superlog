@@ -61,11 +61,7 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
     const until = new Date(Math.min(cursor.getTime() + deps.windowMs, deps.now().getTime()));
     if (until.getTime() <= cursor.getTime()) continue; // nothing new to scan yet
 
-    const perProject = await deps.countByProject(
-      signal,
-      cursor.toISOString(),
-      until.toISOString(),
-    );
+    const perProject = await deps.countByProject(signal, cursor.toISOString(), until.toISOString());
     // Persist the cursor BEFORE issuing the non-idempotent track() calls. track()
     // is additive, so a setCursor failure AFTER tracking would replay this window
     // next tick and double-charge. Advancing first makes it strictly at-most-once:

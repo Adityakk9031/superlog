@@ -201,20 +201,14 @@ export async function fetchLoopsLifecycleForUserProject(params: {
       .from(schema.githubInstallations)
       .innerJoin(schema.projects, eq(schema.projects.id, schema.githubInstallations.projectId))
       .where(
-        and(
-          eq(schema.projects.orgId, params.orgId),
-          isNull(schema.githubInstallations.revokedAt),
-        ),
+        and(eq(schema.projects.orgId, params.orgId), isNull(schema.githubInstallations.revokedAt)),
       ),
     db
       .select({ at: sql<Date | null>`min(${schema.slackInstallations.createdAt})` })
       .from(schema.slackInstallations)
       .innerJoin(schema.projects, eq(schema.projects.id, schema.slackInstallations.projectId))
       .where(
-        and(
-          eq(schema.projects.orgId, params.orgId),
-          isNull(schema.slackInstallations.revokedAt),
-        ),
+        and(eq(schema.projects.orgId, params.orgId), isNull(schema.slackInstallations.revokedAt)),
       ),
     db
       .select({ at: sql<Date | null>`min(${schema.mcpOauthTokens.createdAt})` })
@@ -273,6 +267,18 @@ export async function sendLoopsWelcomeFlow(
     options.eventName ?? process.env.LOOPS_WELCOME_EVENT_NAME ?? DEFAULT_LOOPS_WELCOME_EVENT,
   );
   return loopsRequest("/events/send", payload, options);
+}
+
+// All members of an org (email + user id), for fanning a usage notification out
+// to everyone. No role filter — "all members" per product decision.
+export async function fetchOrgMemberContacts(
+  orgId: string,
+): Promise<Array<{ userId: string; email: string }>> {
+  return db
+    .select({ userId: schema.users.id, email: schema.users.email })
+    .from(schema.orgMembers)
+    .innerJoin(schema.users, eq(schema.users.id, schema.orgMembers.userId))
+    .where(eq(schema.orgMembers.orgId, orgId));
 }
 
 export async function syncLoopsContactForUserProject(

@@ -15,6 +15,8 @@
     "test:demo-feed": "tsx --test src/jobs/demo-feed.test.ts",
     "test:git-auth-no-argv": "tsx scripts/test-git-auth-no-argv.ts",
     "test:patch-normalization": "tsx scripts/test-patch-normalization.ts",
+    "test:usage-notifier": "tsx --test src/billing/usage-notifier.test.ts",
+    "test:usage-email": "tsx --test src/billing/usage-email.test.ts",
     "test:slack-pinning": "tsx --test src/slack-pinning.test.ts",
     "test:incident-cooldown": "tsx --test src/incident-cooldown.test.ts",
     "test:agent-run": "tsx --test src/agent-run.test.ts",
@@ -56,11 +58,13 @@
     "@opentelemetry/sdk-metrics": "^2.7.0",
     "@opentelemetry/sdk-node": "^0.215.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@superlog/billing": "workspace:*",
     "@superlog/db": "workspace:*",
     "@superlog/fingerprint": "workspace:*",
     "@superlog/topology": "workspace:*",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
+    "mjml": "^4.15.3",
     "pg-boss": "^12.0.0",
     "pino": "^10.3.1"
   },
@@ -69,6 +73,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",
+    "@types/mjml": "^4.7.4",
     "@types/node": "^22.10.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
