@@ -13,6 +13,7 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { createIngestEntitlementGate, signalForPath } from "./billing/ingest-entitlement.js";
 import { EmptyBodyError, PayloadTooLargeError } from "./body-capture.js";
+import { EMPTY_BODY_ERROR_MESSAGE, isDeclaredEmptyBody } from "./empty-body-guard.js";
 import {
   FIREHOSE_ACCESS_KEY_HEADER,
   FIREHOSE_REQUEST_ID_HEADER,
@@ -156,6 +157,18 @@ ingestMeter
     observer.observe(uploadSemaphore.queueLength, { "ingest.lane": "upload" });
   });
 
+// Count declared-empty ingest requests fast-rejected before auth (see the
+// /v1/* guard below). A rising rate on one signal = a client looping empty
+// OTLP exports. No tenant attribute: we reject before resolving the key, which
+// is the whole point.
+const emptyBodyRejections = ingestMeter.createCounter(
+  "superlog.proxy.ingest.empty_body_rejected",
+  {
+    description:
+      "OTLP ingest requests fast-rejected pre-auth for a declared-empty (Content-Length: 0) body.",
+  },
+);
+
 // Hard per-request body ceiling for the no-queue (direct) path. The queue path
 // enforces its own copy via IngestQueueConfig.maxBodyBytes; both read the same
 // env so they stay in lockstep. Bodies above this get a 413 (a permanent 4xx —
@@ -172,6 +185,33 @@ app.use(
   }),
 );
 
+// Fast-reject declared-empty bodies BEFORE auth. A Content-Length: 0 OTLP
+// export carries no records, so it's a permanent 400 — rejecting it here skips
+// the key hash, the api_keys read, and the last_used_at write the auth
+// middleware does per request, so a client looping empty exports can't burn CPU
+// on the ingest fleet and drive it unhealthy. Registered after cors() so the
+// 400 still carries CORS headers for browser SDKs. cors() answers OPTIONS
+// preflights itself and never calls next(), so this only sees real requests;
+// the POST check keeps it scoped to ingest regardless.
+//
+// Test keys are exempt: the auth middleware answers their empty smoke-test
+// probes with a 200 short-circuit (no DB), and recognising one is a cheap
+// header/prefix check — so let them through and keep that behavior identical
+// whether or not the probe declares a Content-Length.
+app.use("/v1/*", async (c, next) => {
+  if (
+    c.req.method === "POST" &&
+    isDeclaredEmptyBody(c.req.header("content-length")) &&
+    !isTestKey(extractApiKey(c))
+  ) {
+    emptyBodyRejections.add(1, {
+      "otlp.signal": otlpSignalForPath(new URL(c.req.url).pathname) ?? "unknown",
+    });
+    return c.json({ error: EMPTY_BODY_ERROR_MESSAGE }, 400);
+  }
+  return next();
+});
+
 app.use("/v1/*", async (c, next) => {
   return tracer.startActiveSpan("auth.validate", async (span) => {
     try {
@@ -182,7 +222,7 @@ app.use("/v1/*", async (c, next) => {
         return c.json({ error: "missing api key" }, 401);
       }
 
-      if (key === "SUPERLOG_TEST" || key.startsWith("superlog_test_")) {
+      if (isTestKey(key)) {
         span.setAttribute("auth.result", "test_key");
         const path = new URL(c.req.url).pathname;
         if (path === "/v1/traces" || path === "/v1/logs" || path === "/v1/metrics") {
@@ -322,7 +362,7 @@ function handleIngestBodyError(
     logger.warn({ path, projectId }, "dropping empty OTLP request body");
     return {
       status: 400,
-      response: c.json({ error: "empty OTLP request body; no records to ingest" }, 400),
+      response: c.json({ error: EMPTY_BODY_ERROR_MESSAGE }, 400),
     };
   }
   return null;
@@ -334,6 +374,13 @@ function extractApiKey(c: Context): string | null {
   const auth = c.req.header("authorization");
   if (auth?.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
   return null;
+}
+
+/** The smoke-test credentials the auth middleware answers with a 200 short-circuit
+ *  (no DB). Kept in one place so the pre-auth empty-body guard and the auth check
+ *  can't drift on what counts as a test key. */
+function isTestKey(key: string | null): boolean {
+  return key === "SUPERLOG_TEST" || (key?.startsWith("superlog_test_") ?? false);
 }
 
 async function forward(c: Context<{ Variables: Variables }>, path: string, rootKey: string) {
@@ -424,7 +471,7 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
         responseStatus = 400;
         span.setAttribute("ingest.empty_body", true);
         logger.warn({ path, projectId }, "dropping OTLP request with no body");
-        return c.json({ error: "empty OTLP request body; no records to ingest" }, 400);
+        return c.json({ error: EMPTY_BODY_ERROR_MESSAGE }, 400);
       }
 
       // Issue-fingerprint stamping deserializes the whole payload, so in queue mode it runs
