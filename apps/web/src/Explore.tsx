@@ -52,6 +52,12 @@ import { ScrollArea } from "./design/scroll-area.tsx";
 import { Btn, Chip, Input, Label, ShortcutKey, Tile } from "./design/ui.tsx";
 import { addAttrFilter } from "./exploreAttrFilter.ts";
 import { tracer } from "./instrumentation.ts";
+import {
+  ExploreSignalDetailSkeleton,
+  ExploreSignalListSkeleton,
+  MetricDetailSkeleton,
+  type TelemetrySkeletonSource,
+} from "./skeletons.tsx";
 import { formatLocalHm, formatLocalTimestamp, formatLocalTimestampMs } from "./timeFormat.ts";
 
 const PRESET_STORAGE_KEY = "superlog.explore.range";
@@ -89,6 +95,7 @@ export function Explore() {
 }
 
 export type Source = "logs" | "traces" | "metrics" | "resources";
+type TelemetrySource = TelemetrySkeletonSource;
 export type TracesView = "spans" | "traces";
 
 function sourceFromPath(pathname: string): Source | null {
@@ -418,6 +425,9 @@ function ExploreInner({ projectId }: { projectId: string }) {
         }}
         onAddFilter={addFilter}
       />
+      {selectedLogKey && !selectedLog && logsForSelection.isLoading && (
+        <ExploreSignalDetailDrawerSkeleton source="logs" onClose={closeLog} />
+      )}
     </div>
   );
 }
@@ -1878,11 +1888,7 @@ function MetricChartBody({
     metricAggregation,
   );
   if (q.isLoading) {
-    return (
-      <div className="flex h-48 items-center justify-center font-mono text-[11px] text-subtle">
-        loading…
-      </div>
-    );
+    return <MetricDetailSkeleton />;
   }
   if (q.data && q.data.rows.length > 0) {
     return (
@@ -2353,6 +2359,46 @@ export function MetricLineChart({
   );
 }
 
+function ExploreSignalDetailDrawerSkeleton({
+  source,
+  onClose,
+}: {
+  source: TelemetrySource;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50">
+      <button
+        type="button"
+        aria-label="close"
+        className="absolute inset-0 bg-black/60"
+        onClick={onClose}
+      />
+      <aside className="absolute inset-y-0 right-0 flex w-full max-w-[720px] flex-col border-l border-border bg-bg shadow-2xl">
+        <button
+          type="button"
+          onClick={onClose}
+          title="close (esc)"
+          className="absolute right-4 top-4 z-10 rounded-sm border border-border bg-bg px-2 py-1 font-mono text-[11px] text-muted hover:text-fg"
+        >
+          ✕
+        </button>
+        <div className="flex-1 overflow-y-auto">
+          <ExploreSignalDetailSkeleton source={source} />
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // ListPanel
 // ---------------------------------------------------------------------------
@@ -2379,7 +2425,7 @@ function ListPanel({
 }: {
   projectId: string;
   filter: ExploreFilter;
-  source: Source;
+  source: TelemetrySource;
   limit: number;
   onLoadMore: () => void;
   attrs: ResourceAttr[];
@@ -2412,6 +2458,7 @@ function ListPanel({
   );
   const q =
     source === "logs" ? logs : source === "traces" ? (isTraceAgg ? tracesAgg : traces) : metrics;
+  const initialLoading = q.isLoading && !q.data;
 
   return (
     <Tile padded={false}>
@@ -2442,7 +2489,7 @@ function ListPanel({
           />
         </div>
       )}
-      {q.isFetching && (
+      {q.isFetching && !initialLoading && (
         <div className="flex items-center justify-end border-b border-border px-5 py-1.5">
           <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-subtle">
             loading…
@@ -2450,7 +2497,9 @@ function ListPanel({
         </div>
       )}
       <div className="overflow-auto">
-        {source === "logs" ? (
+        {initialLoading ? (
+          <ExploreSignalListSkeleton source={source} />
+        ) : source === "logs" ? (
           <LogsTable rows={(logs.data ?? []) as never} onSelect={onSelectLog} />
         ) : source === "traces" ? (
           isTraceAgg ? (
