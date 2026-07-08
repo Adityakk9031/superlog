@@ -2398,11 +2398,103 @@ export const railwayInstallations = pgTable(
 
 export type RailwayInstallation = typeof railwayInstallations.$inferSelect;
 
+// A connected Render workspace. Render has no third-party OAuth: the user
+// pastes an API key they created in Render's account settings and picks one
+// workspace (`ownerId`) to share. One row per (project, Render workspace); a
+// re-connect for the same workspace refreshes the row. Like Railway there is
+// nothing to provision on Render's side — a worker-side puller reads logs and
+// infra metrics from Render's REST API scoped to the chosen workspace and
+// forwards them to our intake authenticated by the project ingest key. Render
+// API keys don't expire and don't refresh, but they grant access to every
+// workspace the creating user belongs to, so the key is encrypted at rest
+// (same AES-256-GCM scheme as the other connectors) and only ever used for
+// reads within the chosen workspace.
+export const renderInstallations = pgTable(
+  "render_installations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // The Render workspace ("owner") the user picked at connect — the stable
+    // install key alongside the project.
+    renderOwnerId: text("render_owner_id").notNull(),
+    renderOwnerName: text("render_owner_name"),
+    // Snapshot of the workspace's services, refreshed by the puller. Display +
+    // pull-planning only, never authorization.
+    services: jsonb("services").$type<
+      Array<{
+        id: string;
+        name: string;
+        type: string;
+        region: string | null;
+        suspended: boolean;
+      }>
+    >(),
+    // The user's Render API key, encrypted at rest. No expiry, no refresh; the
+    // user revokes it from Render's dashboard (which strands the install until
+    // reconnect).
+    renderApiKeyCiphertext: bytea("render_api_key_ciphertext").notNull(),
+    renderApiKeyNonce: bytea("render_api_key_nonce").notNull(),
+    renderApiKeyKeyVersion: integer("render_api_key_key_version").notNull().default(1),
+    // The ingest key the puller forwards telemetry with, stored encrypted so a
+    // re-connect reuses the same key instead of minting a new one.
+    apiKeyId: uuid("api_key_id").references(() => apiKeys.id, { onDelete: "set null" }),
+    ingestKeyCiphertext: bytea("ingest_key_ciphertext"),
+    ingestKeyNonce: bytea("ingest_key_nonce"),
+    ingestKeyKeyVersion: integer("ingest_key_key_version"),
+    // Puller checkpoint: log pull group (region) → the RFC3339 timestamp of
+    // the last forwarded log line plus the ids of the lines at that timestamp
+    // (equal-timestamp lines at a page boundary are re-read and deduped by
+    // id), so restarts resume without gaps or duplicates. Plain-string values
+    // are the earlier timestamp-only shape, still accepted on read.
+    logCursor: jsonb("log_cursor").$type<Record<string, { ts: string; ids: string[] } | string>>(),
+    // Puller checkpoint for metrics: series identity (resource + kind +
+    // distinguishing labels) → epoch seconds of the last forwarded sample.
+    metricsCursor: jsonb("metrics_cursor").$type<Record<string, number>>(),
+    // Push-stream provisioning state, one per signal. A Render workspace has
+    // exactly ONE log stream and ONE metrics stream destination, so connect
+    // provisions them to our intake only when the slot is free (or already
+    // ours): "provisioned" = Render pushes this signal and the puller skips
+    // it; "conflict" = a foreign destination occupies the slot (we never
+    // steal it — polling fallback); "unavailable" = plan-gated or rejected
+    // (polling fallback). Null = pre-streams install (polling).
+    logStream: jsonb("log_stream_state").$type<{
+      status: "provisioned" | "conflict" | "unavailable";
+      endpoint: string | null;
+      detail: string | null;
+    }>(),
+    metricsStream: jsonb("metrics_stream_state").$type<{
+      status: "provisioned" | "conflict" | "unavailable";
+      endpoint: string | null;
+      detail: string | null;
+    }>(),
+    installedByUserId: uuid("installed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    // One live install per (project, Render workspace); a re-connect refreshes
+    // the row (see the upsert in apps/api/src/render.ts). Also serves
+    // project-scoped lookups via its left-most `project_id` prefix.
+    projectOwnerUniq: uniqueIndex("render_installations_project_owner_idx").on(
+      t.projectId,
+      t.renderOwnerId,
+    ),
+  }),
+);
+
+export type RenderInstallation = typeof renderInstallations.$inferSelect;
+
 // Per-project ingest source filters. A row means the given (source, signal) is
 // DISABLED for the project — the proxy ack-drops that telemetry at the edge.
 // Sparse by design: no row = enabled, so a new project ingests everything.
 //   source: "otlp" (SDK/OTLP exporters) | "aws" (CloudWatch → Firehose) |
-//           "vercel" (Vercel Drains) | "railway" (Railway API puller)
+//           "vercel" (Vercel Drains) | "railway" (Railway API puller) |
+//           "render" (Render API puller)
 //   signal: "traces" | "logs" | "metrics"
 export const projectIngestFilters = pgTable(
   "project_ingest_filters",
@@ -2411,7 +2503,7 @@ export const projectIngestFilters = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    source: text("source").$type<"otlp" | "aws" | "vercel" | "railway">().notNull(),
+    source: text("source").$type<"otlp" | "aws" | "vercel" | "railway" | "render">().notNull(),
     signal: text("signal").$type<"traces" | "logs" | "metrics">().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
