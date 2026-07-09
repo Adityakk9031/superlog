@@ -5,6 +5,7 @@ import { DEFAULT_TOP_N } from "../dashboards/widgets/series-topn.ts";
 import { Chip, type ChipTone } from "../design/ui.tsx";
 import { type EvidenceLinkContext, EvidenceMarkdown } from "../EvidenceMarkdown.tsx";
 import { LogsTable, TracesTable } from "../Explore.tsx";
+import { type MemoryActivity, memoryActivityFromTool } from "./memory-tool-activity.ts";
 import {
   type TelemetryKind,
   exploreHref,
@@ -53,6 +54,7 @@ type TranscriptItem =
       result: string | null;
       isError: boolean;
     }
+  | MemoryActivity
   // The run paused on `ask_human`. The question lives in the awaiting_human
   // event's detail (or, absent that event, on the run result). Rendered as a
   // rich terminal node rather than a bare lifecycle one-liner.
@@ -124,6 +126,13 @@ export function buildActivityFeed(events: IncidentEvent[]): FeedItem[] {
       const result = resultByUseId.get(e.providerEventId ?? e.id) ?? null;
       const isError = result ? (readToolResult(result)?.isError ?? false) : false;
       const kind = telemetryToolKind(name);
+      const memory = memoryActivityFromTool(
+        e.id,
+        name,
+        use?.input ?? {},
+        result?.summary ?? null,
+        isError,
+      );
       if (kind) {
         items.push({
           type: "telemetry",
@@ -133,6 +142,8 @@ export function buildActivityFeed(events: IncidentEvent[]): FeedItem[] {
           rows: parseResultRows(result?.summary),
           isError,
         });
+      } else if (memory) {
+        items.push(memory);
       } else if (name !== "submit_agent_run_result") {
         items.push({
           type: "tool",
@@ -206,6 +217,7 @@ export function IncidentActivityFeed({
     if (item.type === "message") return <MessageEntry key={item.id} text={item.text} />;
     if (item.type === "human") return <HumanEntry key={item.id} item={item} />;
     if (item.type === "telemetry") return <TelemetryEntry key={item.id} item={item} />;
+    if (item.type === "memory") return <MemoryEntry key={item.id} item={item} />;
     if (item.type === "tool") return <ToolEntry key={item.id} item={item} />;
     if (item.type === "start") return <StartEntry key={item.id} prompt={item.prompt} />;
     if (item.type === "question")
@@ -220,7 +232,7 @@ export function IncidentActivityFeed({
   // the conclusion render after it — so the timeline reads
   // start → (N steps) → conclusion by default without hiding real activity.
   const isStep = (i: FeedItem) =>
-    i.type === "message" || i.type === "telemetry" || i.type === "tool";
+    i.type === "message" || i.type === "telemetry" || i.type === "memory" || i.type === "tool";
   const startIdx = feed.findIndex((i) => i.type === "start");
   let termIdx = -1;
   for (let i = feed.length - 1; i > startIdx; i--) {
@@ -798,6 +810,47 @@ function CodeEntry({ item }: { item: Extract<TranscriptItem, { type: "tool" }> }
           {result.slice(0, 240)}
         </div>
       )}
+    </div>
+  );
+}
+
+function MemoryEntry({ item }: { item: Extract<TranscriptItem, { type: "memory" }> }) {
+  const label = item.isError
+    ? item.action === "updated"
+      ? "Memory update failed"
+      : "Memory save failed"
+    : item.action === "updated"
+      ? "Updated memory"
+      : "Saved memory";
+  const fallbackTitle = item.memoryId ? `Memory ${item.memoryId}` : "Project memory";
+  const title = item.title ?? fallbackTitle;
+  const result = (item.result ?? "").trim();
+  return (
+    <div className="relative mb-6">
+      <Node tone="accent">
+        <path d="M19 21l-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+      </Node>
+      <div className="mb-1.5 flex min-h-[22px] flex-wrap items-center gap-2">
+        <span className="text-[12px] font-semibold text-fg">{label}</span>
+        {item.kind && <Chip tone="muted">{item.kind}</Chip>}
+        {item.status && (
+          <Chip tone={item.status === "archived" ? "warning" : "muted"}>{item.status}</Chip>
+        )}
+        {item.isError && <Chip tone="danger">failed</Chip>}
+      </div>
+      <div className="rounded-lg border border-border bg-surface px-3.5 py-3">
+        <div className="text-[13px] font-medium text-fg">{title}</div>
+        {item.body && (
+          <div className="mt-1.5 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-muted">
+            {item.body}
+          </div>
+        )}
+        {result && item.isError && (
+          <div className="mt-2 line-clamp-2 break-all font-mono text-[11px] text-danger">
+            {result.slice(0, 240)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
