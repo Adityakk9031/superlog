@@ -23,6 +23,7 @@ import {
   useCloudConnections,
   useCloudStackHealth,
   useCloudflareInstallation,
+  useCloudflareWorkers,
   useConnectRender,
   useCreateCloudConnection,
   useCreateKey,
@@ -44,10 +45,10 @@ import {
   useKeys,
   useLinearInstallation,
   useMcpTokens,
-  useNotionInstallation,
   useMe,
   useMintOrgApiKey,
   useMintOrgGithubInstallUrl,
+  useNotionInstallation,
   useOrgAgentSettings,
   useOrgApiKeys,
   useOrgDigest,
@@ -72,6 +73,7 @@ import {
   useSaveIntegration,
   useSaveOrgAgentSettings,
   useSaveOrgDigest,
+  useSetCloudflareAutoWire,
   useSetIngestFilters,
   useSetSlackRoute,
   useSetupCloudStream,
@@ -96,6 +98,7 @@ import {
   useUninstallRender,
   useUninstallSlack,
   useUninstallVercel,
+  useUnwireCloudflareWorker,
   useUpdateGithubRepoAccess,
   useUpdateOrgProject,
   useUpdateWebhook,
@@ -103,6 +106,8 @@ import {
   useVerifyCloudConnection,
   useWebhookDeliveries,
   useWebhooks,
+  useWireAllCloudflareWorkers,
+  useWireCloudflareWorker,
 } from "./api";
 import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
@@ -1288,8 +1293,124 @@ function CloudflareCard({ projectId }: { projectId: string | undefined }) {
             </Btn>
           )}
         </div>
+        {installed && install.data?.installed && (
+          <CloudflareWorkers
+            projectId={projectId}
+            accountId={install.data.accountId}
+            autoWire={install.data.autoWire}
+          />
+        )}
       </div>
     </Tile>
+  );
+}
+
+// The account's Workers, each with its current wiring state. A worker only
+// streams to us when its observability config lists our destination — so a
+// worker that was recreated/renamed shows up here as "Not wired" and can be
+// re-wired with one click (or all at once).
+function CloudflareWorkers({
+  projectId,
+  accountId,
+  autoWire,
+}: {
+  projectId: string | undefined;
+  accountId: string;
+  autoWire: boolean;
+}) {
+  const workers = useCloudflareWorkers(projectId, accountId, true);
+  const wire = useWireCloudflareWorker(projectId);
+  const unwire = useUnwireCloudflareWorker(projectId);
+  const wireAll = useWireAllCloudflareWorkers(projectId);
+  const setAutoWire = useSetCloudflareAutoWire(projectId);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const list = workers.data?.workers ?? [];
+  const anyUnwired = list.some((w) => !w.wired);
+  // Any in-flight wiring change. Disable every wiring control while one is
+  // pending so overlapping PATCHes (a row click during "Wire all", or vice
+  // versa) can't race to a nondeterministic final state.
+  const anyWiringPending =
+    wire.isPending || unwire.isPending || wireAll.isPending || setAutoWire.isPending;
+
+  return (
+    <div className="space-y-3">
+      {/* Auto-wire: when on, a periodic reconcile keeps every Worker wired —
+          including ones created/recreated after connect — so the list is
+          status-only. When off, wiring is manual via the per-row buttons. */}
+      <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-surface-2 px-3 py-2.5">
+        <div className="min-w-0">
+          <div className="text-[13px] font-medium">Auto-wire all Workers</div>
+          <p className="mt-0.5 text-[12px] leading-relaxed text-muted">
+            Keep every Worker connected automatically, including new or recreated ones. Turn off to
+            wire Workers manually.
+          </p>
+        </div>
+        <Toggle
+          checked={autoWire}
+          disabled={anyWiringPending}
+          onChange={(v) => setAutoWire.mutate(v)}
+        />
+      </div>
+
+      {workers.isLoading ? (
+        <p className="text-[13px] text-muted">Loading workers…</p>
+      ) : workers.isError ? (
+        <p className="text-[13px] text-danger">
+          Couldn't load workers — the Cloudflare connection may need reconnecting.
+        </p>
+      ) : list.length === 0 ? (
+        <p className="text-[13px] text-muted">No Workers found in this account.</p>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[13px] font-medium">Workers</span>
+            {!autoWire && (
+              <Btn
+                size="sm"
+                variant="secondary"
+                loading={wireAll.isPending}
+                disabled={!anyUnwired || anyWiringPending}
+                onClick={() => wireAll.mutate()}
+              >
+                Wire all
+              </Btn>
+            )}
+          </div>
+          <ul className="divide-y divide-border overflow-hidden rounded-md border border-border">
+            {list.map((w) => {
+              const pending = busy === w.name && (wire.isPending || unwire.isPending);
+              return (
+                <li key={w.name} className="flex items-center justify-between gap-3 px-3 py-2">
+                  <span className="min-w-0 truncate text-[13px]">{w.name}</span>
+                  <div className="flex flex-shrink-0 items-center gap-2">
+                    <Chip tone={w.wired ? "success" : "muted"} dot>
+                      {w.wired ? "Streaming" : "Not wired"}
+                    </Chip>
+                    {!autoWire && (
+                      <Btn
+                        size="sm"
+                        variant={w.wired ? "secondary" : "primary"}
+                        loading={pending}
+                        disabled={anyWiringPending}
+                        onClick={() => {
+                          setBusy(w.name);
+                          (w.wired ? unwire : wire).mutate(w.name, {
+                            onSettled: () => setBusy(null),
+                          });
+                        }}
+                      >
+                        {w.wired ? "Unwire" : "Wire"}
+                      </Btn>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 

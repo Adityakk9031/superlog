@@ -837,6 +837,7 @@ export type CloudflareInstallation =
       accountName: string | null;
       scope: string | null;
       destinations: Record<string, string>;
+      autoWire: boolean;
       installedAt: string;
     };
 
@@ -874,6 +875,84 @@ export function useUninstallCloudflare(projectId: string | undefined) {
       fetcher<{ ok: true }>(`/api/projects/${projectId}/cloudflare/uninstall`, { method: "POST" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cloudflare-installation", projectId] });
+    },
+  });
+}
+
+export type CloudflareWorker = { name: string; wired: boolean; observabilityEnabled: boolean };
+
+// The account's Worker scripts and whether each currently exports to us. Only
+// fetched when connected (pass `enabled`), since it hits the Cloudflare API.
+// Keyed by accountId as well as projectId so a same-project reconnect to a
+// different Cloudflare account can't momentarily show the previous account's
+// workers from cache. Mutations invalidate by the ["cloudflare-workers",
+// projectId] prefix, which still matches this longer key.
+export function useCloudflareWorkers(
+  projectId: string | undefined,
+  accountId: string | undefined,
+  enabled: boolean,
+) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["cloudflare-workers", projectId, accountId],
+    queryFn: () =>
+      fetcher<{ workers: CloudflareWorker[] }>(`/api/projects/${projectId}/cloudflare/workers`),
+    enabled: !!projectId && !!accountId && enabled,
+  });
+}
+
+function useCloudflareWorkerAction(projectId: string | undefined, action: "wire" | "unwire") {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (script: string) =>
+      fetcher<{ ok: true; wired: boolean }>(
+        `/api/projects/${projectId}/cloudflare/workers/${encodeURIComponent(script)}/${action}`,
+        { method: "POST" },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cloudflare-workers", projectId] });
+    },
+  });
+}
+
+export function useWireCloudflareWorker(projectId: string | undefined) {
+  return useCloudflareWorkerAction(projectId, "wire");
+}
+
+export function useUnwireCloudflareWorker(projectId: string | undefined) {
+  return useCloudflareWorkerAction(projectId, "unwire");
+}
+
+export function useWireAllCloudflareWorkers(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ ok: true; scripts: number; wired: number }>(
+        `/api/projects/${projectId}/cloudflare/workers/wire-all`,
+        { method: "POST" },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cloudflare-workers", projectId] });
+    },
+  });
+}
+
+// Toggle auto-wire. Enabling also runs an immediate wire pass server-side, so
+// refresh both the installation (autoWire flag) and the workers list on success.
+export function useSetCloudflareAutoWire(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (autoWire: boolean) =>
+      fetcher<{ ok: true; autoWire: boolean }>(`/api/projects/${projectId}/cloudflare/auto-wire`, {
+        method: "POST",
+        body: JSON.stringify({ autoWire }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cloudflare-installation", projectId] });
+      qc.invalidateQueries({ queryKey: ["cloudflare-workers", projectId] });
     },
   });
 }
