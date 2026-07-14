@@ -168,8 +168,11 @@ test("provisioning reconciles an existing subscription push configuration", asyn
     (request) => request.url.pathname.includes("/subscriptions/") && request.method === "PATCH",
   );
   assert.ok(patch);
-  assert.equal(patch.body.updateMask, "pushConfig,ackDeadlineSeconds,retryPolicy");
-  assert.deepEqual(patch.body.subscription, {
+  assert.equal(
+    patch.url.searchParams.get("updateMask"),
+    "pushConfig,ackDeadlineSeconds,retryPolicy",
+  );
+  assert.deepEqual(patch.body, {
     name: "projects/superlog-observability/subscriptions/superlog-connection-id",
     ackDeadlineSeconds: 30,
     pushConfig: {
