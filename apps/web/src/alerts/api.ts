@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { alertSeriesPath } from "./series-path.ts";
 import type {
   Alert,
   AlertCreateBody,
@@ -49,6 +50,24 @@ export function useAlertEpisodes(projectId: string | undefined, id: string | und
     queryKey: ["alert-episodes", projectId, id],
     queryFn: () => fetcher<AlertEpisode[]>(`/api/projects/${projectId}/alerts/${id}/episodes`),
     enabled: !!projectId && !!id,
+  });
+}
+
+// The evaluated-signal series (with threshold) for a *saved* alert, keyed by
+// alert id. Used by the incident timeline to draw the alert's metric-vs-threshold
+// graph on the triggering issue card. `enabled` lets callers defer the fetch
+// until the card is actually an alert.
+export function useAlertSeries(
+  projectId: string | undefined,
+  alertId: string | undefined,
+  options: { enabled?: boolean; groupKey?: string | null } = {},
+) {
+  const fetcher = useFetcher();
+  const groupKey = options.groupKey ?? undefined;
+  return useQuery({
+    queryKey: ["alert-series", projectId, alertId, groupKey ?? null],
+    queryFn: () => fetcher<AlertPreviewSeries>(alertSeriesPath(projectId, alertId, groupKey)),
+    enabled: !!projectId && !!alertId && options.enabled !== false,
   });
 }
 
