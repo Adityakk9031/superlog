@@ -153,7 +153,13 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
       return c.json({ error: "GCP connect not configured" }, 503);
     const outcomeUrl = (outcome: "connected" | "denied" | "error") =>
       `${config.webOrigin}/connect/gcp?gcp=${outcome}`;
-    if (c.req.query("error")) return c.redirect(outcomeUrl("denied"), 302);
+    if (c.req.query("error")) {
+      const deniedState = verifyGcpState(c.req.query("state") ?? "", stateSecret);
+      if (deniedState) {
+        await repository.markFailed(deniedState.connectionId, "Google OAuth access denied");
+      }
+      return c.redirect(outcomeUrl("denied"), 302);
+    }
     const code = c.req.query("code");
     const state = verifyGcpState(c.req.query("state") ?? "", stateSecret);
     if (!code || !state) return c.redirect(outcomeUrl("error"), 302);

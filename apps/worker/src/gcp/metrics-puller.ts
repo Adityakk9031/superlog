@@ -151,7 +151,15 @@ export async function runGcpMetricsPullOnce(input: {
         } while (pageToken);
       }
 
-      const fresh = filterPointsAfterCursor(collected, connection.metricsCursor);
+      // Cloud Monitoring can return samples that are newer than its documented
+      // visibility window. Do not deliver them until the same watermark can be
+      // persisted, otherwise every overlapping poll forwards them again.
+      const visibilityWatermark = new Date(endTime.getTime() - GCP_METRICS_VISIBILITY_LAG_MS);
+      const fresh = filterPointsThroughWatermark(
+        collected,
+        connection.metricsCursor,
+        visibilityWatermark,
+      );
       const points = fresh.reduce((sum, series) => sum + (series.points?.length ?? 0), 0);
       const delivered =
         points === 0 ||
@@ -166,13 +174,7 @@ export async function runGcpMetricsPullOnce(input: {
       stats.pointsForwarded += points;
       const deliveredThrough = latestPointTime(fresh);
       if (deliveredThrough) {
-        // A faster metric must not advance the connection-wide cursor past
-        // points from a slower metric that are still within the overlap window.
-        const visibilityWatermark = endTime.getTime() - GCP_METRICS_VISIBILITY_LAG_MS;
-        await input.store.saveCursor(
-          connection.id,
-          new Date(Math.min(deliveredThrough.getTime(), visibilityWatermark)),
-        );
+        await input.store.saveCursor(connection.id, deliveredThrough);
       }
     } catch {
       stats.errors += 1;
@@ -181,12 +183,17 @@ export async function runGcpMetricsPullOnce(input: {
   return stats;
 }
 
-function filterPointsAfterCursor(series: GcpTimeSeries[], cursor: Date | null): GcpTimeSeries[] {
+function filterPointsThroughWatermark(
+  series: GcpTimeSeries[],
+  cursor: Date | null,
+  visibilityWatermark: Date,
+): GcpTimeSeries[] {
   const cursorMs = cursor?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const watermarkMs = visibilityWatermark.getTime();
   return series.flatMap((timeSeries) => {
     const points = (timeSeries.points ?? []).filter((point) => {
       const timestamp = Date.parse(point.interval?.endTime ?? "");
-      return Number.isFinite(timestamp) && timestamp > cursorMs;
+      return Number.isFinite(timestamp) && timestamp > cursorMs && timestamp <= watermarkMs;
     });
     return points.length > 0 ? [{ ...timeSeries, points }] : [];
   });

@@ -151,6 +151,53 @@ test("a project owner connects GCP without retaining their OAuth token", async (
   assert.equal(connected.refreshToken, undefined);
 });
 
+test("denying Google consent marks the pending connection failed", async () => {
+  const { org, user, project } = await seedProject();
+  const gateway: GcpGateway = {
+    authorizationUrl({ state }) {
+      return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}`;
+    },
+    async exchangeCode() {
+      throw new Error("denied callbacks must not exchange a code");
+    },
+    async provision() {
+      throw new Error("denied callbacks must not provision resources");
+    },
+    async deprovision() {},
+  };
+  const app = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpPublic(app, { config, gateway });
+  mountGcpAuthed(app, { config, gateway });
+
+  const start = await app.request(`/api/projects/${project.id}/gcp/install-url`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ gcpProjectId: "acme-production" }),
+  });
+  const { url } = (await start.json()) as { url: string };
+  const state = new URL(url).searchParams.get("state");
+  assert.ok(state);
+
+  const callback = await app.request(
+    `/gcp/oauth/callback?error=access_denied&state=${encodeURIComponent(state)}`,
+  );
+  assert.equal(callback.status, 302);
+  assert.equal(callback.headers.get("location"), "https://app.example.com/connect/gcp?gcp=denied");
+
+  const connection = await db.query.gcpConnections.findFirst({
+    where: eq(schema.gcpConnections.projectId, project.id),
+  });
+  assert.equal(connection?.status, "failed");
+  assert.equal(connection?.lastError, "Google OAuth access denied");
+});
+
 test("completing an older OAuth tab does not revoke a newer pending connection", async () => {
   const { user, project } = await seedProject();
   const [older] = await db

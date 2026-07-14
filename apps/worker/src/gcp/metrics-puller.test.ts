@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { runGcpMetricsPullOnce } from "./metrics-puller.js";
 
-test("the metrics puller spends only the remaining budget and checkpoints at a visibility watermark", async () => {
+test("the metrics puller forwards and checkpoints only through the visibility watermark", async () => {
   const pageSizes: number[] = [];
   const reservations: Array<{ month: string; requested: number; monthlyLimit: number }> = [];
   const savedCursors: Date[] = [];
@@ -20,7 +20,7 @@ test("the metrics puller spends only the remaining budget and checkpoints at a v
             id: "connection-id",
             projectId: "superlog-project-id",
             gcpProjectId: "acme-production",
-            metricsCursor: new Date("2026-07-13T11:55:00Z"),
+            metricsCursor: new Date("2026-07-13T11:45:00Z"),
             metricsBudgetMonth: "2026-07",
             metricsSeriesRead: 99_999_999,
             ingestKey: "sl_public_test",
@@ -59,6 +59,10 @@ test("the metrics puller spends only the remaining budget and checkpoints at a v
               valueType: "DOUBLE",
               points: [
                 {
+                  interval: { endTime: "2026-07-13T11:49:00Z" },
+                  value: { doubleValue: 0.41 },
+                },
+                {
                   interval: { endTime: "2026-07-13T11:59:00Z" },
                   value: { doubleValue: 0.42 },
                 },
@@ -82,7 +86,7 @@ test("the metrics puller spends only the remaining budget and checkpoints at a v
     { month: "2026-07", requested: 1_000, monthlyLimit: 100_000_000 },
   ]);
   assert.equal(seriesRead, 100_000_000);
-  assert.deepEqual(savedCursors, [new Date("2026-07-13T11:50:00Z")]);
+  assert.deepEqual(savedCursors, [new Date("2026-07-13T11:49:00Z")]);
   assert.deepEqual(stats, { connections: 1, seriesRead: 1, pointsForwarded: 1, errors: 0 });
 });
 
@@ -100,7 +104,7 @@ test("a failed intake still spends the read budget but does not advance the data
             id: "connection-id",
             projectId: "project-id",
             gcpProjectId: "acme-production",
-            metricsCursor: new Date("2026-07-13T11:55:00Z"),
+            metricsCursor: new Date("2026-07-13T11:45:00Z"),
             metricsBudgetMonth: "2026-07",
             metricsSeriesRead: 9,
             ingestKey: "sl_public_test",
@@ -129,7 +133,7 @@ test("a failed intake still spends the read budget but does not advance the data
               resource: { type: "gce_instance", labels: { project_id: "acme-production" } },
               metricKind: "GAUGE",
               points: [
-                { interval: { endTime: "2026-07-13T11:59:00Z" }, value: { doubleValue: 0.5 } },
+                { interval: { endTime: "2026-07-13T11:49:00Z" }, value: { doubleValue: 0.5 } },
               ],
             },
           ],
@@ -275,7 +279,7 @@ test("overlap reads do not forward metric points at or before the delivered curs
     }>;
   }> = [];
   const starts: Date[] = [];
-  const cursor = new Date("2026-07-13T11:55:00Z");
+  const cursor = new Date("2026-07-13T11:45:00Z");
   const stats = await runGcpMetricsPullOnce({
     now: () => new Date("2026-07-13T12:00:00Z"),
     monthlySeriesLimit: 10,
@@ -311,11 +315,11 @@ test("overlap reads do not forward metric points at or before the delivered curs
               metricKind: "GAUGE",
               points: [
                 {
-                  interval: { endTime: "2026-07-13T11:54:00Z" },
+                  interval: { endTime: "2026-07-13T11:44:00Z" },
                   value: { doubleValue: 0.4 },
                 },
                 {
-                  interval: { endTime: "2026-07-13T11:56:00Z" },
+                  interval: { endTime: "2026-07-13T11:49:00Z" },
                   value: { doubleValue: 0.5 },
                 },
               ],
@@ -330,7 +334,7 @@ test("overlap reads do not forward metric points at or before the delivered curs
     },
   });
 
-  assert.equal(starts[0]?.toISOString(), "2026-07-13T11:45:00.000Z");
+  assert.equal(starts[0]?.toISOString(), "2026-07-13T11:40:00.000Z");
   assert.equal(
     forwarded[0]?.resourceMetrics[0]?.scopeMetrics[0]?.metrics[0]?.gauge.dataPoints.length,
     1,
@@ -384,8 +388,8 @@ test("Cloud Run CPU utilization distributions are forwarded as OTLP histograms",
               points: [
                 {
                   interval: {
-                    startTime: "2026-07-13T11:58:00Z",
-                    endTime: "2026-07-13T11:59:00Z",
+                    startTime: "2026-07-13T11:48:00Z",
+                    endTime: "2026-07-13T11:49:00Z",
                   },
                   value: {
                     distributionValue: {
@@ -436,10 +440,10 @@ test("Cloud Run CPU utilization distributions are forwarded as OTLP histograms",
     max: 0.9,
     bucketCounts: ["1", "1", "1", "1"],
     explicitBounds: [0.25, 0.5, 1],
-    timeUnixNano: "1783943940000000000",
-    startTimeUnixNano: "1783943880000000000",
+    timeUnixNano: "1783943340000000000",
+    startTimeUnixNano: "1783943280000000000",
     attributes: [],
   });
   assert.equal(stats.pointsForwarded, 1);
-  assert.deepEqual(savedCursors, [new Date("2026-07-13T11:50:00Z")]);
+  assert.deepEqual(savedCursors, [new Date("2026-07-13T11:49:00Z")]);
 });
