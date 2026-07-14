@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ApiError } from "./api-error.ts";
 import { incidentPollIntervalMs } from "./incidents/agent-run-polling.ts";
 
 const API_URL = import.meta.env?.VITE_API_URL ?? "http://localhost:4100";
@@ -91,7 +92,7 @@ function useFetcher() {
     });
     if (!res.ok) {
       const body = await res.text();
-      throw new Error(`${res.status}: ${body}`);
+      throw new ApiError(res.status, body);
     }
     return res.json() as Promise<T>;
   };
@@ -1541,6 +1542,20 @@ export function useSetActiveProject() {
         body: JSON.stringify({ projectId }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["me"] }),
+  });
+}
+
+export function useSetActiveContext() {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (input: { orgSlug: string; projectSlug: string }) =>
+      fetcher<{
+        org: { id: string; name: string; slug: string };
+        project: { id: string; name: string; slug: string };
+      }>("/api/me/active-context", {
+        method: "PUT",
+        body: JSON.stringify(input),
+      }),
   });
 }
 
