@@ -94,7 +94,10 @@ type IamPolicy = {
 };
 
 function addMember(policy: IamPolicy, role: string, member: string): IamPolicy {
-  const bindings = [...(policy.bindings ?? [])];
+  const bindings = (policy.bindings ?? []).map((binding) => ({
+    ...binding,
+    members: [...binding.members],
+  }));
   // Never add a global integration principal to a conditional binding. If the
   // customer only has conditional bindings for this role, create a separate
   // unconditional binding for the explicit project-level grant.

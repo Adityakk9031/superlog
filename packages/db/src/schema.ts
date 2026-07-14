@@ -2492,6 +2492,11 @@ export const gcpConnections = pgTable(
     // Customer-owned route and the Google-managed identity that publishes it.
     logSinkName: text("log_sink_name"),
     logSinkWriterIdentity: text("log_sink_writer_identity"),
+    // Ownership provenance: only remove the monitoring grant on replacement
+    // when this connection originally created it.
+    monitoringViewerGrantCreated: boolean("monitoring_viewer_grant_created")
+      .notNull()
+      .default(false),
     // Persisted for audit/display only; this is our read-only identity, not a
     // customer secret or key.
     readerServiceAccountEmail: text("reader_service_account_email").notNull(),

@@ -82,7 +82,7 @@ test("the metrics puller spends only the remaining series budget and checkpoints
     { month: "2026-07", requested: 1_000, monthlyLimit: 100_000_000 },
   ]);
   assert.equal(seriesRead, 100_000_000);
-  assert.deepEqual(savedCursors, [now]);
+  assert.deepEqual(savedCursors, [new Date("2026-07-13T11:59:00Z")]);
   assert.deepEqual(stats, { connections: 1, seriesRead: 1, pointsForwarded: 1, errors: 0 });
 });
 
@@ -180,6 +180,46 @@ test("no paid Monitoring call starts when the atomic database reservation is exh
     },
   });
   assert.equal(monitoringCalls, 0);
+});
+
+test("an empty poll does not checkpoint past delayed Cloud Monitoring samples", async () => {
+  const savedCursors: Date[] = [];
+  await runGcpMetricsPullOnce({
+    now: () => new Date("2026-07-13T12:00:00Z"),
+    monthlySeriesLimit: 10,
+    store: {
+      async listConnected() {
+        return [
+          {
+            id: "connection-id",
+            projectId: "project-id",
+            gcpProjectId: "acme-production",
+            metricsCursor: new Date("2026-07-13T11:55:00Z"),
+            metricsBudgetMonth: "2026-07",
+            metricsSeriesRead: 0,
+            ingestKey: "sl_public_test",
+          },
+        ];
+      },
+      async reserveBudget(_id, reservation) {
+        return reservation.requested;
+      },
+      async refundBudget() {},
+      async saveCursor(_id, cursor) {
+        savedCursors.push(cursor);
+      },
+    },
+    monitoring: {
+      async listTimeSeries() {
+        return { timeSeries: [] };
+      },
+    },
+    async forward() {
+      throw new Error("empty polls must not be forwarded");
+    },
+  });
+
+  assert.deepEqual(savedCursors, []);
 });
 
 test("overlap reads do not forward metric points at or before the delivered cursor", async () => {
@@ -355,5 +395,5 @@ test("Cloud Run CPU utilization distributions are forwarded as OTLP histograms",
     attributes: [],
   });
   assert.equal(stats.pointsForwarded, 1);
-  assert.deepEqual(savedCursors, [new Date("2026-07-13T12:00:00Z")]);
+  assert.deepEqual(savedCursors, [new Date("2026-07-13T11:59:00Z")]);
 });

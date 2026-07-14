@@ -156,7 +156,8 @@ export async function runGcpMetricsPullOnce(input: {
         continue;
       }
       stats.pointsForwarded += points;
-      await input.store.saveCursor(connection.id, endTime);
+      const deliveredThrough = latestPointTime(fresh);
+      if (deliveredThrough) await input.store.saveCursor(connection.id, deliveredThrough);
     } catch {
       stats.errors += 1;
     }
@@ -165,15 +166,25 @@ export async function runGcpMetricsPullOnce(input: {
 }
 
 function filterPointsAfterCursor(series: GcpTimeSeries[], cursor: Date | null): GcpTimeSeries[] {
-  if (!cursor) return series;
-  const cursorMs = cursor.getTime();
+  const cursorMs = cursor?.getTime() ?? Number.NEGATIVE_INFINITY;
   return series.flatMap((timeSeries) => {
     const points = (timeSeries.points ?? []).filter((point) => {
-      const endTime = point.interval?.endTime;
-      return !!endTime && Date.parse(endTime) > cursorMs;
+      const timestamp = Date.parse(point.interval?.endTime ?? "");
+      return Number.isFinite(timestamp) && timestamp > cursorMs;
     });
     return points.length > 0 ? [{ ...timeSeries, points }] : [];
   });
+}
+
+function latestPointTime(series: GcpTimeSeries[]): Date | null {
+  let latest = Number.NEGATIVE_INFINITY;
+  for (const timeSeries of series) {
+    for (const point of timeSeries.points ?? []) {
+      const timestamp = Date.parse(point.interval?.endTime ?? "");
+      if (Number.isFinite(timestamp) && timestamp > latest) latest = timestamp;
+    }
+  }
+  return Number.isFinite(latest) ? new Date(latest) : null;
 }
 
 export function gcpTimeSeriesToOtlp(series: GcpTimeSeries[], gcpProjectId: string) {

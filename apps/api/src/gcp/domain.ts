@@ -10,6 +10,7 @@ export type GcpConnectionRecord = {
   subscriptionName: string | null;
   logSinkName: string | null;
   logSinkWriterIdentity: string | null;
+  monitoringViewerGrantCreated: boolean;
   readerServiceAccountEmail: string;
   lastVerifiedAt: Date | null;
   lastLogReceivedAt: Date | null;

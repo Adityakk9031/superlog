@@ -239,7 +239,21 @@ test("a later provisioning failure rolls back resources and IAM changes from tha
       return Response.json({ name: "projects/123456789012" });
     }
     if (url.pathname.endsWith(":getIamPolicy")) {
-      return Response.json({ bindings: [], etag: "original-etag", version: 3 });
+      return Response.json({
+        bindings: [
+          url.hostname === "pubsub.googleapis.com"
+            ? {
+                role: "roles/pubsub.publisher",
+                members: ["serviceAccount:existing-publisher@example.iam.gserviceaccount.com"],
+              }
+            : {
+                role: "roles/monitoring.viewer",
+                members: ["serviceAccount:existing-reader@example.iam.gserviceaccount.com"],
+              },
+        ],
+        etag: "original-etag",
+        version: 3,
+      });
     }
     if (url.pathname.endsWith(":setIamPolicy")) return Response.json(body.policy ?? {});
     if (url.pathname.endsWith("/sinks")) {
@@ -276,8 +290,26 @@ test("a later provisioning failure rolls back resources and IAM changes from tha
     "/v2/projects/acme-production/sinks/superlog-connection-id",
     "/v1/projects/superlog-observability/topics/superlog-connection-id",
   ]);
-  assert.equal(
-    requests.filter((request) => request.url.pathname.endsWith(":setIamPolicy")).length,
-    4,
-  );
+  const policyWrites = requests.filter((request) => request.url.pathname.endsWith(":setIamPolicy"));
+  assert.equal(policyWrites.length, 4);
+  assert.deepEqual(policyWrites[2]?.body.policy, {
+    bindings: [
+      {
+        role: "roles/monitoring.viewer",
+        members: ["serviceAccount:existing-reader@example.iam.gserviceaccount.com"],
+      },
+    ],
+    etag: "original-etag",
+    version: 3,
+  });
+  assert.deepEqual(policyWrites[3]?.body.policy, {
+    bindings: [
+      {
+        role: "roles/pubsub.publisher",
+        members: ["serviceAccount:existing-publisher@example.iam.gserviceaccount.com"],
+      },
+    ],
+    etag: "original-etag",
+    version: 3,
+  });
 });

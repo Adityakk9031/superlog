@@ -138,8 +138,6 @@ function persistedProvisioningResult(connection: GcpConnectionRecord): Provision
     subscriptionName: connection.subscriptionName,
     logSinkName: connection.logSinkName,
     logSinkWriterIdentity: connection.logSinkWriterIdentity,
-    // This provenance is intentionally not persisted. Replacement cleanup must
-    // never remove a monitoring grant that may have predated the connection.
-    monitoringViewerGrantCreated: false,
+    monitoringViewerGrantCreated: connection.monitoringViewerGrantCreated,
   };
 }

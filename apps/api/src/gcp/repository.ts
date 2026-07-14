@@ -92,6 +92,7 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
           subscriptionName: result.subscriptionName,
           logSinkName: result.logSinkName,
           logSinkWriterIdentity: result.logSinkWriterIdentity,
+          monitoringViewerGrantCreated: result.monitoringViewerGrantCreated,
           status: "connected",
           lastError: null,
           lastVerifiedAt: new Date(),

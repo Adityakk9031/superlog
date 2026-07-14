@@ -27,6 +27,7 @@ const connection: GcpConnectionRecord = {
   subscriptionName: null,
   logSinkName: null,
   logSinkWriterIdentity: null,
+  monitoringViewerGrantCreated: false,
   readerServiceAccountEmail: config.readerServiceAccountEmail,
   lastVerifiedAt: null,
   lastLogReceivedAt: null,
@@ -136,6 +137,7 @@ test("replacing a connected GCP project removes its cloud resources before super
     subscriptionName: "superlog-old-connection-id",
     logSinkName: "superlog-old-connection-id",
     logSinkWriterIdentity: "serviceAccount:old-cloud-logs@system.gserviceaccount.com",
+    monitoringViewerGrantCreated: true,
   };
   const connected = {
     ...connection,
@@ -172,7 +174,7 @@ test("replacing a connected GCP project removes its cloud resources before super
         subscriptionName: "superlog-old-connection-id",
         logSinkName: "superlog-old-connection-id",
         logSinkWriterIdentity: "serviceAccount:old-cloud-logs@system.gserviceaccount.com",
-        monitoringViewerGrantCreated: false,
+        monitoringViewerGrantCreated: true,
       });
     },
   } as unknown as GcpGateway;
