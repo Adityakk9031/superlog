@@ -42,6 +42,14 @@ export function resolveGcpPubSubPushAudience(
   return env.GCP_PUBSUB_PUSH_AUDIENCE ?? env.GCP_PUBSUB_PUSH_ENDPOINT;
 }
 
+export function acknowledgeGcpPubSubDelivery(response: Response): Response {
+  if (response.status !== 402) return response;
+  return new Response(null, {
+    status: 204,
+    headers: { "x-superlog-pubsub-drop": "quota_exceeded" },
+  });
+}
+
 export async function authenticateGcpPubSubPush(input: {
   authorization: string | null | undefined;
   audience: string;

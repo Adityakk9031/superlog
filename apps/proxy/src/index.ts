@@ -29,6 +29,7 @@ import {
 } from "./firehose.js";
 import {
   type GcpIdTokenVerifier,
+  acknowledgeGcpPubSubDelivery,
   authenticateGcpPubSubPush,
   gcpPubSubLogToOtlp,
   resolveGcpPubSubPushAudience,
@@ -500,7 +501,7 @@ app.post("/gcp/pubsub/:connectionId", async (c) => {
       .where(eq(schema.gcpConnections.id, connection.id))
       .catch((err: unknown) => logger.warn({ err }, "failed to update GCP log receipt time"));
   }
-  return response;
+  return acknowledgeGcpPubSubDelivery(response);
 });
 
 app.get("/health", (c) => c.json({ ok: true }));

@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
+  acknowledgeGcpPubSubDelivery,
   authenticateGcpPubSubPush,
   gcpPubSubLogToOtlp,
   resolveGcpPubSubPushAudience,
@@ -21,6 +22,15 @@ test("the Pub/Sub verifier defaults its audience to the configured push endpoint
     }),
     "https://audience.example.com/gcp",
   );
+});
+
+test("Pub/Sub acknowledges permanent quota drops but preserves retryable failures", () => {
+  const quotaDrop = acknowledgeGcpPubSubDelivery(new Response("quota exceeded", { status: 402 }));
+  assert.equal(quotaDrop.status, 204);
+  assert.equal(quotaDrop.headers.get("x-superlog-pubsub-drop"), "quota_exceeded");
+
+  const retryable = new Response("collector unavailable", { status: 503 });
+  assert.equal(acknowledgeGcpPubSubDelivery(retryable), retryable);
 });
 
 test("Pub/Sub push authentication requires the configured audience and service account", async () => {
@@ -88,7 +98,8 @@ test("a Cloud Logging Pub/Sub push becomes a tenant-safe OTLP log", () => {
   const payload = gcpPubSubLogToOtlp(Buffer.from(JSON.stringify(push)), "acme-production");
   const rows = otlpLogsToRows(payload, "superlog-project-id");
   assert.equal(rows.length, 1);
-  const row = rows[0]!;
+  const row = rows[0];
+  assert.ok(row);
   assert.equal(row.Body, "checkout failed");
   assert.equal(row.SeverityText, "ERROR");
   assert.equal(row.ServiceName, "checkout-api");

@@ -105,7 +105,9 @@ export async function runGcpMetricsPullOnce(input: {
         monthlyLimit: input.monthlySeriesLimit,
         now: endTime,
       }).month;
-      const collected: GcpTimeSeries[] = [];
+      const visibilityWatermark = new Date(endTime.getTime() - GCP_METRICS_VISIBILITY_LAG_MS);
+      let deliveredThrough: Date | null = null;
+      let deliveryFailed = false;
 
       outer: for (const metricType of CURATED_GCP_METRIC_TYPES) {
         let pageToken: string | undefined;
@@ -146,33 +148,39 @@ export async function runGcpMetricsPullOnce(input: {
             });
           }
           stats.seriesRead += page.timeSeries.length;
-          collected.push(...page.timeSeries);
+          // Keep memory and the intake payload bounded to one Monitoring page.
+          // The cursor commits only after every delivered page succeeds, so a
+          // partial failure remains at-least-once instead of dropping data.
+          const fresh = filterPointsThroughWatermark(
+            page.timeSeries,
+            connection.metricsCursor,
+            visibilityWatermark,
+          );
+          const points = fresh.reduce((sum, series) => sum + (series.points?.length ?? 0), 0);
+          if (points > 0) {
+            const delivered = await input.forward({
+              payload: gcpTimeSeriesToOtlp(fresh, connection.gcpProjectId),
+              ingestKey: connection.ingestKey,
+            });
+            if (!delivered) {
+              stats.errors += 1;
+              deliveryFailed = true;
+              break outer;
+            }
+            stats.pointsForwarded += points;
+            const pageDeliveredThrough = latestPointTime(fresh);
+            if (
+              pageDeliveredThrough &&
+              (!deliveredThrough || pageDeliveredThrough > deliveredThrough)
+            ) {
+              deliveredThrough = pageDeliveredThrough;
+            }
+          }
           pageToken = page.nextPageToken;
         } while (pageToken);
       }
 
-      // Cloud Monitoring can return samples that are newer than its documented
-      // visibility window. Do not deliver them until the same watermark can be
-      // persisted, otherwise every overlapping poll forwards them again.
-      const visibilityWatermark = new Date(endTime.getTime() - GCP_METRICS_VISIBILITY_LAG_MS);
-      const fresh = filterPointsThroughWatermark(
-        collected,
-        connection.metricsCursor,
-        visibilityWatermark,
-      );
-      const points = fresh.reduce((sum, series) => sum + (series.points?.length ?? 0), 0);
-      const delivered =
-        points === 0 ||
-        (await input.forward({
-          payload: gcpTimeSeriesToOtlp(fresh, connection.gcpProjectId),
-          ingestKey: connection.ingestKey,
-        }));
-      if (!delivered) {
-        stats.errors += 1;
-        continue;
-      }
-      stats.pointsForwarded += points;
-      const deliveredThrough = latestPointTime(fresh);
+      if (deliveryFailed) continue;
       if (deliveredThrough) {
         await input.store.saveCursor(connection.id, deliveredThrough);
       }

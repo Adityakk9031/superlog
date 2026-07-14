@@ -90,6 +90,74 @@ test("the metrics puller forwards and checkpoints only through the visibility wa
   assert.deepEqual(stats, { connections: 1, seriesRead: 1, pointsForwarded: 1, errors: 0 });
 });
 
+test("paginated Monitoring results are forwarded in bounded page payloads", async () => {
+  const forwardedSeriesCounts: number[] = [];
+  const savedCursors: Date[] = [];
+  let seriesRead = 0;
+  let monitoringCalls = 0;
+  const stats = await runGcpMetricsPullOnce({
+    now: () => new Date("2026-07-13T12:00:00Z"),
+    monthlySeriesLimit: 2,
+    store: {
+      async listConnected() {
+        return [
+          {
+            id: "connection-id",
+            projectId: "project-id",
+            gcpProjectId: "acme-production",
+            metricsCursor: new Date("2026-07-13T11:45:00Z"),
+            metricsBudgetMonth: "2026-07",
+            metricsSeriesRead: 0,
+            ingestKey: "sl_public_test",
+          },
+        ];
+      },
+      async reserveBudget(_id, reservation) {
+        const reserved = Math.min(reservation.requested, reservation.monthlyLimit - seriesRead);
+        seriesRead += reserved;
+        return reserved;
+      },
+      async refundBudget(_id, refund) {
+        seriesRead -= refund.series;
+      },
+      async saveCursor(_id, cursor) {
+        savedCursors.push(cursor);
+      },
+    },
+    monitoring: {
+      async listTimeSeries() {
+        monitoringCalls += 1;
+        const minute = 47 + monitoringCalls;
+        return {
+          timeSeries: [
+            {
+              metric: { type: "compute.googleapis.com/instance/cpu/utilization" },
+              resource: { type: "gce_instance" },
+              metricKind: "GAUGE",
+              points: [
+                {
+                  interval: { endTime: `2026-07-13T11:${minute}:00Z` },
+                  value: { doubleValue: 0.4 + monitoringCalls / 10 },
+                },
+              ],
+            },
+          ],
+          ...(monitoringCalls === 1 ? { nextPageToken: "page-2" } : {}),
+        };
+      },
+    },
+    async forward({ payload }) {
+      const body = payload as { resourceMetrics: unknown[] };
+      forwardedSeriesCounts.push(body.resourceMetrics.length);
+      return true;
+    },
+  });
+
+  assert.deepEqual(forwardedSeriesCounts, [1, 1]);
+  assert.deepEqual(savedCursors, [new Date("2026-07-13T11:49:00Z")]);
+  assert.deepEqual(stats, { connections: 1, seriesRead: 2, pointsForwarded: 2, errors: 0 });
+});
+
 test("a failed intake still spends the read budget but does not advance the data cursor", async () => {
   const reservations: number[] = [];
   const savedCursors: Date[] = [];
@@ -144,7 +212,7 @@ test("a failed intake still spends the read budget but does not advance the data
       return false;
     },
   });
-  assert.deepEqual(reservations, [1_000, 1_000]);
+  assert.deepEqual(reservations, [1_000]);
   assert.deepEqual(savedCursors, []);
 });
 
