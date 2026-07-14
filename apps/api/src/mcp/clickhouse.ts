@@ -1568,6 +1568,8 @@ async function countSeriesFromRollup(
   return rows.map((row) => ({ bucket: row.bucket, group: row.group_key, count: Number(row.c) }));
 }
 
+const SERIES_SCAN_ROW_CAP = 1_000_000;
+
 export async function countSeries(
   ch: ClickHouseClient,
   projectId: string,
@@ -1575,10 +1577,11 @@ export async function countSeries(
   filter: SeriesFilter,
   groupBy: string | undefined,
   step: Step,
-): Promise<{ bucket: string; group: string; count: number }[]> {
+): Promise<{ rows: { bucket: string; group: string; count: number }[]; sampled: boolean }> {
   const folded = foldServiceAttrFilter(filter);
   if (folded && rollupEligible(folded, groupBy, step) && (await rollupAvailable(ch))) {
-    return countSeriesFromRollup(ch, projectId, source, folded, groupBy, step);
+    const rows = await countSeriesFromRollup(ch, projectId, source, folded, groupBy, step);
+    return { rows, sampled: false };
   }
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(filter.range);
   const split = splitAttrs(filter.resourceAttrs);
@@ -1616,8 +1619,12 @@ export async function countSeries(
       toString(toStartOfInterval(Timestamp, INTERVAL ${step.n} ${step.unit})) AS bucket,
       ${group.expr} AS group_key,
       count() AS c
-    FROM ${table}
-    WHERE ${conds.join(" AND ")}
+    FROM (
+      SELECT Timestamp, ServiceName, ResourceAttributes, ${source === "logs" ? "LogAttributes" : "SpanAttributes"}
+      FROM ${table}
+      WHERE ${conds.join(" AND ")}
+      LIMIT ${SERIES_SCAN_ROW_CAP}
+    )
     GROUP BY bucket, group_key
     ORDER BY bucket ASC
     LIMIT 10000
@@ -1643,7 +1650,9 @@ export async function countSeries(
     format: "JSONEachRow",
   });
   const rows = (await r.json()) as { bucket: string; group_key: string; c: string | number }[];
-  return rows.map((row) => ({ bucket: row.bucket, group: row.group_key, count: Number(row.c) }));
+  const mapped = rows.map((row) => ({ bucket: row.bucket, group: row.group_key, count: Number(row.c) }));
+  const totalCount = mapped.reduce((acc, row) => acc + row.count, 0);
+  return { rows: mapped, sampled: totalCount >= SERIES_SCAN_ROW_CAP };
 }
 
 // -----------------------------------------------------------------------------
