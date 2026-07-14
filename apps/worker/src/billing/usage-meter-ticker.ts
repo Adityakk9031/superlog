@@ -5,7 +5,8 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import { type DB, db as defaultDb, schema } from "@superlog/db";
 import { inArray } from "drizzle-orm";
-import { buildUsageCountQuery } from "./usage-count-query.js";
+import { findMetricUsageProjectionTables } from "./metric-usage-schema.js";
+import { buildUsageCountQueries } from "./usage-count-query.js";
 import {
   type UsageMeterDeps,
   type UsageSignal,
@@ -20,18 +21,38 @@ function chTime(iso: string): string {
   return iso.replace("T", " ").replace("Z", "");
 }
 
-function createCountByProject(clickhouse: Pick<ClickHouseClient, "query">) {
+export function createCountByProject(
+  clickhouse: Pick<ClickHouseClient, "query">,
+  abortSignal?: AbortSignal,
+) {
+  let optimizedMetricTables: Promise<ReadonlySet<string>> | undefined;
   return async (signal: UsageSignal, afterIso: string, untilIso: string) => {
-    const result = await clickhouse.query({
-      query: buildUsageCountQuery(signal),
-      query_params: { after: chTime(afterIso), until: chTime(untilIso) },
-      format: "JSONEachRow",
-    });
-    const rows = (await result.json()) as Array<{ pid: string; c: number | string }>;
     const out = new Map<string, number>();
-    for (const row of rows) {
-      const n = Number(row.c);
-      if (row.pid && Number.isFinite(n) && n > 0) out.set(row.pid, n);
+    // Metrics live in five physical tables. Query them one at a time so a
+    // single metering pass never fans five full-partition scans out in
+    // parallel under write load. Each request also gets its own client
+    // deadline instead of sharing one deadline across a UNION ALL query.
+    let optimizedTables: ReadonlySet<string> | undefined;
+    if (signal === "metric_points") {
+      if (!optimizedMetricTables) {
+        optimizedMetricTables = findMetricUsageProjectionTables(clickhouse, abortSignal);
+      }
+      optimizedTables = await optimizedMetricTables;
+    }
+    for (const query of buildUsageCountQueries(signal, optimizedTables)) {
+      const result = await clickhouse.query({
+        query,
+        query_params: { after: chTime(afterIso), until: chTime(untilIso) },
+        format: "JSONEachRow",
+        abort_signal: abortSignal,
+      });
+      const rows = (await result.json()) as Array<{ pid: string; c: number | string }>;
+      for (const row of rows) {
+        const n = Number(row.c);
+        if (row.pid && Number.isFinite(n) && n > 0) {
+          out.set(row.pid, (out.get(row.pid) ?? 0) + n);
+        }
+      }
     }
     return out;
   };
@@ -72,6 +93,11 @@ function createCursorStore(database: DB, windowMs: number) {
 
 const TRACK_TIMEOUT_MS = 10_000;
 
+function autumnRequestSignal(jobSignal?: AbortSignal): AbortSignal {
+  const requestTimeout = AbortSignal.timeout(TRACK_TIMEOUT_MS);
+  return jobSignal ? AbortSignal.any([jobSignal, requestTimeout]) : requestTimeout;
+}
+
 // Attempt to create an Autumn customer for the given org so that a subsequent
 // track() call can succeed. Autumn auto-enables the Free plan on customer
 // creation (autoEnable:true in autumn.config.ts), so this is sufficient to
@@ -80,19 +106,24 @@ async function createAutumnCustomer(
   secretKey: string,
   orgId: string,
   fetchImpl: typeof fetch,
+  jobSignal?: AbortSignal,
 ): Promise<void> {
   const res = await fetchImpl("https://api.useautumn.com/v1/customers", {
     method: "POST",
     headers: { Authorization: `Bearer ${secretKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ id: orgId }),
-    signal: AbortSignal.timeout(TRACK_TIMEOUT_MS),
+    signal: autumnRequestSignal(jobSignal),
   });
   // 200 = created; 409 = already exists (race with another tick or auth plugin).
   // Both are safe to treat as success — the customer exists either way.
   if (!res.ok && res.status !== 409) throw new Error(`autumn /customers -> ${res.status}`);
 }
 
-function createAutumnTrack(secretKey: string, fetchImpl: typeof fetch = fetch) {
+export function createAutumnTrack(
+  secretKey: string,
+  fetchImpl: typeof fetch = fetch,
+  jobSignal?: AbortSignal,
+) {
   return async (orgId: string, featureId: string, value: number): Promise<void> => {
     // Bound the request so a hung Autumn connection can't stall the worker tick
     // loop indefinitely. On timeout the fetch rejects → the caller logs + skips
@@ -101,19 +132,19 @@ function createAutumnTrack(secretKey: string, fetchImpl: typeof fetch = fetch) {
       method: "POST",
       headers: { Authorization: `Bearer ${secretKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ customer_id: orgId, feature_id: featureId, value }),
-      signal: AbortSignal.timeout(TRACK_TIMEOUT_MS),
+      signal: autumnRequestSignal(jobSignal),
     });
     if (res.status === 404) {
       // The org is not yet provisioned in Autumn (e.g. a legacy org created
       // before the Autumn integration, or a sign-up that bypassed the auth
       // plugin). Auto-create the customer — Autumn attaches the Free plan via
       // autoEnable — then retry the track so usage is not dropped.
-      await createAutumnCustomer(secretKey, orgId, fetchImpl);
+      await createAutumnCustomer(secretKey, orgId, fetchImpl, jobSignal);
       const retry = await fetchImpl("https://api.useautumn.com/v1/track", {
         method: "POST",
         headers: { Authorization: `Bearer ${secretKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ customer_id: orgId, feature_id: featureId, value }),
-        signal: AbortSignal.timeout(TRACK_TIMEOUT_MS),
+        signal: autumnRequestSignal(jobSignal),
       });
       if (!retry.ok) throw new Error(`autumn /track -> ${retry.status} (after customer create)`);
       return;
@@ -134,6 +165,7 @@ export function createUsageMeterTicker(options: {
   intervalMs?: number;
   windowMs?: number;
   now?: () => number;
+  signal?: AbortSignal;
 }): UsageMeterTicker | null {
   const secretKey = (options.secretKey ?? process.env.AUTUMN_SECRET_KEY)?.trim();
   if (!secretKey) return null;
@@ -144,13 +176,14 @@ export function createUsageMeterTicker(options: {
   const nowMs = options.now ?? Date.now;
   const cursors = createCursorStore(database, windowMs);
   const deps: UsageMeterDeps = {
-    countByProject: createCountByProject(options.clickhouse),
+    countByProject: createCountByProject(options.clickhouse, options.signal),
     resolveOrgIds: createResolveOrgIds(database),
-    track: createAutumnTrack(secretKey),
+    track: createAutumnTrack(secretKey, fetch, options.signal),
     getCursor: cursors.getCursor,
     setCursor: cursors.setCursor,
     now: () => new Date(nowMs()),
     windowMs,
+    isCancelled: () => options.signal?.aborted ?? false,
   };
 
   let nextRunAt = 0;
