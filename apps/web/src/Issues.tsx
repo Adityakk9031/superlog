@@ -75,6 +75,8 @@ import {
 import {
   type IncidentMetaRow,
   buildIncidentDetailMeta,
+  latestIncidentLinearTicket,
+  linearTicketSidebarTarget,
 } from "./incidents/incident-detail-view-model.ts";
 import { IncidentDetailScrollArea } from "./incidents/IncidentDetailScrollArea.tsx";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
@@ -1127,7 +1129,7 @@ function IncidentDetailBody({
       </div>
     );
   }
-  const { incident, issues, agentRun, agentRuns, timeline, alertEpisodes } = q.data;
+  const { incident, issues, agentRun, agentRuns, linearTickets, timeline, alertEpisodes } = q.data;
 
   function handleStatusAction(action: IncidentStatusAction) {
     updateIncident.mutate({
@@ -1151,6 +1153,7 @@ function IncidentDetailBody({
       issues={issues}
       agentRun={agentRun}
       agentRuns={agentRuns}
+      linearTickets={linearTickets}
       alertEpisodes={alertEpisodes}
       pendingResolutionProposal={q.data.pendingResolutionProposal ?? null}
       events={timeline}
@@ -1519,6 +1522,7 @@ export function IncidentDetailContent({
   issues,
   agentRun,
   agentRuns = [],
+  linearTickets = [],
   alertEpisodes = [],
   pendingResolutionProposal,
   events,
@@ -1544,6 +1548,7 @@ export function IncidentDetailContent({
   issues: Issue[];
   agentRun: AgentRun | null;
   agentRuns?: AgentRun[];
+  linearTickets?: import("./api.ts").IncidentLinearTicket[];
   alertEpisodes?: IncidentAlertEpisode[];
   pendingResolutionProposal?: PendingResolutionProposal | null;
   events: IncidentEvent[];
@@ -1591,6 +1596,10 @@ export function IncidentDetailContent({
     incident.agentSummary ??
     agentRun?.result?.summary ??
     "No investigation summary has been recorded yet.";
+  const latestLinearTicket = latestIncidentLinearTicket(linearTickets);
+  const linearTicketTarget = latestLinearTicket
+    ? linearTicketSidebarTarget(latestLinearTicket)
+    : null;
   const triggeringIssue = issues.reduce<Issue | null>((earliest, issue) => {
     if (!earliest) return issue;
     return Date.parse(issue.firstSeen) < Date.parse(earliest.firstSeen) ? issue : earliest;
@@ -1646,6 +1655,24 @@ export function IncidentDetailContent({
               {/* "Agent run" stays last; Linked issues slots in where Findings used to be. */}
               <IncidentSidebarMetaRows rows={detailMeta.slice(0, -1)} />
               <LinkedIssuesMetaRow issues={issues} onViewIssue={onViewIssue} />
+              {linearTicketTarget && (
+                <div className="grid grid-cols-[132px_minmax(0,1fr)] items-start gap-3 text-[13px]">
+                  <div className="text-muted">Linear ticket</div>
+                  {linearTicketTarget.url ? (
+                    <a
+                      href={linearTicketTarget.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex min-w-0 items-center gap-[5px] text-fg transition-colors hover:text-muted"
+                    >
+                      <ArrowUpRightIcon />
+                      <span className="min-w-0 truncate">{linearTicketTarget.label}</span>
+                    </a>
+                  ) : (
+                    <span className="min-w-0 truncate text-fg">{linearTicketTarget.label}</span>
+                  )}
+                </div>
+              )}
               <IncidentSidebarMetaRows rows={detailMeta.slice(-1)} />
             </div>
 
