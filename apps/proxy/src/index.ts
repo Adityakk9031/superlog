@@ -1,8 +1,5 @@
 import "./env.js";
 import { Readable } from "node:stream";
-// Telemetry flush is owned by shutdown() below (the single SIGTERM owner), not by
-// tracing.ts, so the OTel flush can't race the ingest drain and exit early.
-import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { serve } from "@hono/node-server";
 import { type Span, SpanStatusCode, metrics, trace } from "@opentelemetry/api";
 import {
@@ -20,6 +17,7 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { createIngestEntitlementGate, signalForPath } from "./billing/ingest-entitlement.js";
 import { EmptyBodyError, PayloadTooLargeError } from "./body-capture.js";
+import { ClickHouseIngestWriter, getIngestClickHouseConfig } from "./clickhouse-writer.js";
 import { EMPTY_BODY_ERROR_MESSAGE, isDeclaredEmptyBody } from "./empty-body-guard.js";
 import {
   FIREHOSE_ACCESS_KEY_HEADER,
@@ -30,14 +28,12 @@ import {
   parseAccountIdFromFirehoseArn,
 } from "./firehose.js";
 import {
-  ClickHouseIngestWriter,
-  getIngestClickHouseConfig,
-} from "./clickhouse-writer.js";
-import {
+  type GcpIdTokenVerifier,
   authenticateGcpPubSubPush,
   gcpPubSubLogToOtlp,
-  type GcpIdTokenVerifier,
+  resolveGcpPubSubPushAudience,
 } from "./gcp-pubsub.js";
+import { mountGcpMetricsPullRoute } from "./gcp-pull-routes.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
 import {
@@ -52,6 +48,9 @@ import { decodeOtlpMetricsPayload } from "./otlp-decode.js";
 import { stampRenderStreamMetrics } from "./render-metrics-stream.js";
 import { createRenderSyslogServer, renderSyslogToOtlp } from "./render-syslog.js";
 import { Semaphore } from "./semaphore.js";
+// Telemetry flush is owned by shutdown() below (the single SIGTERM owner), not by
+// tracing.ts, so the OTel flush can't race the ingest drain and exit early.
+import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { lookupOrgForProject, recordIngestRequest } from "./tenant-metrics.js";
 import { parseVercelLogDrainBody, vercelLogsToOtlp } from "./vercel-log-drain.js";
 
@@ -87,7 +86,10 @@ const ingestRowWriter =
     : undefined;
 if (ingestRowWriter) {
   logger.info(
-    { database: ingestClickHouseConfig?.database, insertQuorum: ingestClickHouseConfig?.insertQuorum },
+    {
+      database: ingestClickHouseConfig?.database,
+      insertQuorum: ingestClickHouseConfig?.insertQuorum,
+    },
     "ingest direct-to-clickhouse writes enabled for logs and traces",
   );
 }
@@ -112,7 +114,7 @@ const ingestSourceFilter = createIngestSourceFilter({
   },
 });
 
-const GCP_PUBSUB_PUSH_AUDIENCE = process.env.GCP_PUBSUB_PUSH_AUDIENCE;
+const GCP_PUBSUB_PUSH_AUDIENCE = resolveGcpPubSubPushAudience(process.env);
 const GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL = process.env.GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL;
 const googleOidcClient = new OAuth2Client();
 const gcpIdTokenVerifier: GcpIdTokenVerifier = {
@@ -192,13 +194,10 @@ ingestMeter
 // /v1/* guard below). A rising rate on one signal = a client looping empty
 // OTLP exports. No tenant attribute: we reject before resolving the key, which
 // is the whole point.
-const emptyBodyRejections = ingestMeter.createCounter(
-  "superlog.proxy.ingest.empty_body_rejected",
-  {
-    description:
-      "OTLP ingest requests fast-rejected pre-auth for a declared-empty (Content-Length: 0) body.",
-  },
-);
+const emptyBodyRejections = ingestMeter.createCounter("superlog.proxy.ingest.empty_body_rejected", {
+  description:
+    "OTLP ingest requests fast-rejected pre-auth for a declared-empty (Content-Length: 0) body.",
+});
 
 // Hard per-request body ceiling for the no-queue (direct) path. The queue path
 // enforces its own copy via IngestQueueConfig.maxBodyBytes; both read the same
@@ -373,6 +372,10 @@ app.use("/vercel/drains/*", validateIngestKey);
 app.use("/railway/pull/*", validateIngestKey);
 app.use("/render/pull/*", validateIngestKey);
 app.use("/render/stream/*", validateIngestKey);
+mountGcpMetricsPullRoute(app, {
+  validateIngestKey,
+  forward: (c) => forward(c, "/v1/metrics", "resourceMetrics", { source: "gcp" }),
+});
 
 app.post("/v1/traces", (c) => forward(c, "/v1/traces", "resourceSpans"));
 app.post("/v1/logs", (c) => forward(c, "/v1/logs", "resourceLogs"));
@@ -398,7 +401,9 @@ app.post("/vercel/drains/logs", (c) =>
 // installation's ingest key — same tenant resolution and per-source filter
 // discipline as the Vercel drains, just pushed by our own worker instead of
 // the vendor.
-app.post("/railway/pull/logs", (c) => forward(c, "/v1/logs", "resourceLogs", { source: "railway" }));
+app.post("/railway/pull/logs", (c) =>
+  forward(c, "/v1/logs", "resourceLogs", { source: "railway" }),
+);
 app.post("/railway/pull/metrics", (c) =>
   forward(c, "/v1/metrics", "resourceMetrics", { source: "railway" }),
 );
@@ -409,9 +414,6 @@ app.post("/railway/pull/metrics", (c) =>
 app.post("/render/pull/logs", (c) => forward(c, "/v1/logs", "resourceLogs", { source: "render" }));
 app.post("/render/pull/metrics", (c) =>
   forward(c, "/v1/metrics", "resourceMetrics", { source: "render" }),
-);
-app.post("/gcp/pull/metrics", (c) =>
-  forward(c, "/v1/metrics", "resourceMetrics", { source: "gcp" }),
 );
 
 // Render metrics-stream ingest: Render pushes OTLP directly here (no puller

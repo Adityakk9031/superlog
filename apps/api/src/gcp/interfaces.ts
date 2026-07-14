@@ -2,13 +2,13 @@ import { db, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { completeGcpConnect, startGcpConnect, type GcpApplicationConfig } from "./application.js";
+import { resolveActiveOrgContext } from "../org-context.js";
+import { type GcpApplicationConfig, completeGcpConnect, startGcpConnect } from "./application.js";
 import type { GcpConnectionRecord, GcpConnectionRepository, GcpGateway } from "./domain.js";
 import { parseGcpProjectId } from "./domain.js";
 import { GoogleGcpGateway } from "./google-gateway.js";
 import { DrizzleGcpConnectionRepository } from "./repository.js";
 import { signGcpState, verifyGcpState } from "./state.js";
-import { resolveActiveOrgContext } from "../org-context.js";
 
 type Vars = { userId: string; orgId: string | null };
 
@@ -121,7 +121,11 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
     if (!config || !gateway || !stateSecret)
       return c.json({ error: "GCP connect not configured" }, 503);
     const context = await requireProjectAccess(c, c.req.param("projectId"));
-    const body = (await c.req.json().catch(() => ({}))) as { gcpProjectId?: unknown };
+    const parsedBody = await c.req.json().catch(() => ({}));
+    const body =
+      parsedBody && typeof parsedBody === "object"
+        ? (parsedBody as { gcpProjectId?: unknown })
+        : {};
     let gcpProjectId: string;
     try {
       gcpProjectId = parseGcpProjectId(body.gcpProjectId);

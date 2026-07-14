@@ -17,9 +17,21 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     readerServiceAccountEmail: string;
     createdBy: string;
   }): Promise<GcpConnectionRecord> {
-    const [row] = await db.insert(schema.gcpConnections).values(input).returning();
-    if (!row) throw new Error("failed to create GCP connection");
-    return toDomain(row);
+    const [inserted] = await db
+      .insert(schema.gcpConnections)
+      .values(input)
+      .onConflictDoNothing()
+      .returning();
+    if (inserted) return toDomain(inserted);
+    const active = await db.query.gcpConnections.findFirst({
+      where: and(
+        eq(schema.gcpConnections.projectId, input.projectId),
+        eq(schema.gcpConnections.gcpProjectId, input.gcpProjectId),
+        isNull(schema.gcpConnections.revokedAt),
+      ),
+    });
+    if (!active) throw new Error("failed to create GCP connection");
+    return toDomain(active);
   }
 
   async findById(id: string): Promise<GcpConnectionRecord | null> {
@@ -88,6 +100,7 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
           and(
             eq(schema.gcpConnections.projectId, row.projectId),
             ne(schema.gcpConnections.id, row.id),
+            eq(schema.gcpConnections.status, "connected"),
             isNull(schema.gcpConnections.revokedAt),
           ),
         );

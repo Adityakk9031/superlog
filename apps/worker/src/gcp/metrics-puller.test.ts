@@ -181,3 +181,73 @@ test("no paid Monitoring call starts when the atomic database reservation is exh
   });
   assert.equal(monitoringCalls, 0);
 });
+
+test("overlap reads do not forward metric points at or before the delivered cursor", async () => {
+  const forwarded: Array<{
+    resourceMetrics: Array<{
+      scopeMetrics: Array<{ metrics: Array<{ gauge: { dataPoints: unknown[] } }> }>;
+    }>;
+  }> = [];
+  const starts: Date[] = [];
+  const cursor = new Date("2026-07-13T11:55:00Z");
+  const stats = await runGcpMetricsPullOnce({
+    now: () => new Date("2026-07-13T12:00:00Z"),
+    monthlySeriesLimit: 10,
+    store: {
+      async listConnected() {
+        return [
+          {
+            id: "connection-id",
+            projectId: "project-id",
+            gcpProjectId: "acme-production",
+            metricsCursor: cursor,
+            metricsBudgetMonth: "2026-07",
+            metricsSeriesRead: 0,
+            ingestKey: "sl_public_test",
+          },
+        ];
+      },
+      async reserveBudget(_id, reservation) {
+        return reservation.requested;
+      },
+      async refundBudget() {},
+      async saveCursor() {},
+    },
+    monitoring: {
+      async listTimeSeries(input) {
+        starts.push(input.startTime);
+        if (starts.length > 1) return { timeSeries: [] };
+        return {
+          timeSeries: [
+            {
+              metric: { type: "compute.googleapis.com/instance/cpu/utilization" },
+              resource: { type: "gce_instance" },
+              metricKind: "GAUGE",
+              points: [
+                {
+                  interval: { endTime: "2026-07-13T11:54:00Z" },
+                  value: { doubleValue: 0.4 },
+                },
+                {
+                  interval: { endTime: "2026-07-13T11:56:00Z" },
+                  value: { doubleValue: 0.5 },
+                },
+              ],
+            },
+          ],
+        };
+      },
+    },
+    async forward({ payload }) {
+      forwarded.push(payload as (typeof forwarded)[number]);
+      return true;
+    },
+  });
+
+  assert.equal(starts[0]?.toISOString(), "2026-07-13T11:45:00.000Z");
+  assert.equal(
+    forwarded[0]?.resourceMetrics[0]?.scopeMetrics[0]?.metrics[0]?.gauge.dataPoints.length,
+    1,
+  );
+  assert.equal(stats.pointsForwarded, 1);
+});

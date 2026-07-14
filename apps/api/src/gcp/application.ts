@@ -38,13 +38,16 @@ export async function completeGcpConnect(input: {
 }): Promise<GcpConnectionRecord> {
   const connection = await input.repository.findById(input.connectionId);
   if (!connection || connection.revokedAt) throw new Error("GCP connection not found");
+  if (connection.status === "connected") return connection;
 
   await input.repository.markProvisioning(connection.id);
+  let accessToken: string | null = null;
+  let provisioned: Awaited<ReturnType<GcpGateway["provision"]>> | null = null;
   try {
     // This token intentionally remains a local variable and is never passed to
     // persistence. It exists only long enough to perform customer-authorized setup.
-    const { accessToken } = await input.gateway.exchangeCode(input.code);
-    const result = await input.gateway.provision({
+    ({ accessToken } = await input.gateway.exchangeCode(input.code));
+    provisioned = await input.gateway.provision({
       connectionId: connection.id,
       gcpProjectId: connection.gcpProjectId,
       userAccessToken: accessToken,
@@ -55,9 +58,25 @@ export async function completeGcpConnect(input: {
       pushEndpoint: `${input.config.pushEndpoint.replace(/\/$/, "")}/${connection.id}`,
     });
     await input.repository.ensureIngestKey(connection.id, connection.projectId);
-    return await input.repository.markConnected(connection.id, result);
+    return await input.repository.markConnected(connection.id, provisioned);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "GCP provisioning failed";
+    let message = error instanceof Error ? error.message : "GCP provisioning failed";
+    if (accessToken && provisioned) {
+      try {
+        await input.gateway.deprovision({
+          connectionId: connection.id,
+          gcpProjectId: connection.gcpProjectId,
+          userAccessToken: accessToken,
+          integrationProjectId: input.config.integrationProjectId,
+          readerServiceAccountEmail: input.config.readerServiceAccountEmail,
+          provisioned,
+        });
+      } catch (cleanupError) {
+        const cleanupMessage =
+          cleanupError instanceof Error ? cleanupError.message : "unknown cleanup error";
+        message = `${message}; cleanup failed: ${cleanupMessage}`;
+      }
+    }
     await input.repository.markFailed(connection.id, message);
     throw error;
   }

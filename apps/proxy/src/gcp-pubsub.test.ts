@@ -1,7 +1,27 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import {
+  authenticateGcpPubSubPush,
+  gcpPubSubLogToOtlp,
+  resolveGcpPubSubPushAudience,
+} from "./gcp-pubsub.js";
 import { otlpLogsToRows } from "./otlp-clickhouse.js";
-import { authenticateGcpPubSubPush, gcpPubSubLogToOtlp } from "./gcp-pubsub.js";
+
+test("the Pub/Sub verifier defaults its audience to the configured push endpoint", () => {
+  assert.equal(
+    resolveGcpPubSubPushAudience({
+      GCP_PUBSUB_PUSH_ENDPOINT: "https://intake.example.com/gcp/pubsub",
+    }),
+    "https://intake.example.com/gcp/pubsub",
+  );
+  assert.equal(
+    resolveGcpPubSubPushAudience({
+      GCP_PUBSUB_PUSH_ENDPOINT: "https://intake.example.com/gcp/pubsub",
+      GCP_PUBSUB_PUSH_AUDIENCE: "https://audience.example.com/gcp",
+    }),
+    "https://audience.example.com/gcp",
+  );
+});
 
 test("Pub/Sub push authentication requires the configured audience and service account", async () => {
   const seen: Array<{ idToken: string; audience: string }> = [];

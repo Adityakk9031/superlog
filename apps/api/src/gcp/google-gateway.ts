@@ -1,5 +1,11 @@
+import type {
+  GcpDeprovisioningInput,
+  GcpGateway,
+  GcpProvisioningInput,
+  ProvisionedGcpConnection,
+} from "./domain.js";
+import { createAwsFederatedGcpClient } from "@superlog/gcp-auth";
 import type { GcpConnectConfig } from "./interfaces.js";
-import type { GcpGateway, GcpProvisioningInput, ProvisionedGcpConnection } from "./domain.js";
 
 type AccessTokenProvider = () => Promise<string>;
 
@@ -48,7 +54,7 @@ async function ensureResource(
   accessToken: string,
   body: unknown,
   quotaProject: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await requestJson(
       fetchImpl,
@@ -57,8 +63,23 @@ async function ensureResource(
       { method: "PUT", body: JSON.stringify(body) },
       quotaProject,
     );
+    return true;
   } catch (error) {
     if (!(error instanceof GoogleApiError) || error.status !== 409) throw error;
+    return false;
+  }
+}
+
+async function deleteResource(
+  fetchImpl: typeof fetch,
+  url: string,
+  accessToken: string,
+  quotaProject?: string,
+): Promise<void> {
+  try {
+    await requestJson(fetchImpl, url, accessToken, { method: "DELETE" }, quotaProject);
+  } catch (error) {
+    if (!(error instanceof GoogleApiError) || error.status !== 404) throw error;
   }
 }
 
@@ -84,6 +105,34 @@ function addMember(policy: IamPolicy, role: string, member: string): IamPolicy {
     bindings.push({ role, members: [member] });
   }
   return { ...policy, bindings };
+}
+
+function hasMember(policy: IamPolicy, role: string, member: string): boolean {
+  return (policy.bindings ?? []).some(
+    (binding) => binding.role === role && !binding.condition && binding.members.includes(member),
+  );
+}
+
+function removeMember(policy: IamPolicy, role: string, member: string): IamPolicy {
+  const bindings = (policy.bindings ?? []).flatMap((binding) => {
+    if (binding.role !== role || binding.condition || !binding.members.includes(member)) {
+      return [binding];
+    }
+    const members = binding.members.filter((candidate) => candidate !== member);
+    return members.length > 0 ? [{ ...binding, members }] : [];
+  });
+  return { ...policy, bindings };
+}
+
+async function bestEffort(actions: Array<() => Promise<void>>): Promise<void> {
+  for (const action of actions) {
+    try {
+      await action();
+    } catch {
+      // Preserve the provisioning failure. A subsequent connection retry can
+      // reconcile deterministic resource names if compensation is incomplete.
+    }
+  }
 }
 
 export class GoogleGcpGateway implements GcpGateway {
@@ -146,114 +195,241 @@ export class GoogleGcpGateway implements GcpGateway {
     const gcpProjectNumber = project.name.split("/").at(-1);
     if (!gcpProjectNumber) throw new Error("Google Cloud project number was not returned");
 
-    await ensureResource(
-      this.fetchImpl,
-      `https://pubsub.googleapis.com/v1/${topicPath}`,
-      serviceToken,
-      {},
-      input.integrationProjectId,
-    );
-
+    let topicCreated = false;
+    let sinkCreated = false;
+    let topicPolicyBefore: IamPolicy | null = null;
+    let topicPolicyChanged = false;
+    let projectPolicyBefore: IamPolicy | null = null;
+    let projectPolicyChanged = false;
     let sink: { name: string; writerIdentity: string };
     try {
-      sink = await requestJson(
+      topicCreated = await ensureResource(
         this.fetchImpl,
-        `https://logging.googleapis.com/v2/projects/${encodeURIComponent(input.gcpProjectId)}/sinks?uniqueWriterIdentity=true`,
+        `https://pubsub.googleapis.com/v1/${topicPath}`,
+        serviceToken,
+        {},
+        input.integrationProjectId,
+      );
+
+      try {
+        sink = await requestJson(
+          this.fetchImpl,
+          `https://logging.googleapis.com/v2/projects/${encodeURIComponent(input.gcpProjectId)}/sinks?uniqueWriterIdentity=true`,
+          input.userAccessToken,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              name: resourceSlug,
+              destination: `pubsub.googleapis.com/${topicPath}`,
+              description: "Routes project logs to Superlog",
+            }),
+          },
+        );
+        sinkCreated = true;
+      } catch (error) {
+        if (!(error instanceof GoogleApiError) || error.status !== 409) throw error;
+        sink = await requestJson(
+          this.fetchImpl,
+          `https://logging.googleapis.com/v2/projects/${encodeURIComponent(input.gcpProjectId)}/sinks/${resourceSlug}`,
+          input.userAccessToken,
+          {},
+        );
+      }
+
+      const topicPolicyUrl = `https://pubsub.googleapis.com/v1/${topicPath}`;
+      topicPolicyBefore = await requestJson<IamPolicy>(
+        this.fetchImpl,
+        `${topicPolicyUrl}:getIamPolicy`,
+        serviceToken,
+        {
+          method: "POST",
+          body: JSON.stringify({ options: { requestedPolicyVersion: 3 } }),
+        },
+        input.integrationProjectId,
+      );
+      if (!hasMember(topicPolicyBefore, "roles/pubsub.publisher", sink.writerIdentity)) {
+        await requestJson(
+          this.fetchImpl,
+          `${topicPolicyUrl}:setIamPolicy`,
+          serviceToken,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              policy: addMember(topicPolicyBefore, "roles/pubsub.publisher", sink.writerIdentity),
+            }),
+          },
+          input.integrationProjectId,
+        );
+        topicPolicyChanged = true;
+      }
+
+      const projectIamUrl = `https://cloudresourcemanager.googleapis.com/v1/projects/${encodeURIComponent(input.gcpProjectId)}`;
+      projectPolicyBefore = await requestJson<IamPolicy>(
+        this.fetchImpl,
+        `${projectIamUrl}:getIamPolicy`,
         input.userAccessToken,
         {
           method: "POST",
-          body: JSON.stringify({
-            name: resourceSlug,
-            destination: `pubsub.googleapis.com/${topicPath}`,
-            description: "Routes project logs to Superlog",
-          }),
+          body: JSON.stringify({ options: { requestedPolicyVersion: 3 } }),
         },
       );
-    } catch (error) {
-      if (!(error instanceof GoogleApiError) || error.status !== 409) throw error;
-      sink = await requestJson(
+      const readerMember = `serviceAccount:${input.readerServiceAccountEmail}`;
+      if (!hasMember(projectPolicyBefore, "roles/monitoring.viewer", readerMember)) {
+        await requestJson(this.fetchImpl, `${projectIamUrl}:setIamPolicy`, input.userAccessToken, {
+          method: "POST",
+          body: JSON.stringify({
+            policy: addMember(projectPolicyBefore, "roles/monitoring.viewer", readerMember),
+          }),
+        });
+        projectPolicyChanged = true;
+      }
+
+      await ensureResource(
         this.fetchImpl,
-        `https://logging.googleapis.com/v2/projects/${encodeURIComponent(input.gcpProjectId)}/sinks/${resourceSlug}`,
-        input.userAccessToken,
-        {},
+        `https://pubsub.googleapis.com/v1/${subscriptionPath}`,
+        serviceToken,
+        {
+          topic: topicPath,
+          ackDeadlineSeconds: 30,
+          pushConfig: {
+            pushEndpoint: input.pushEndpoint,
+            oidcToken: {
+              serviceAccountEmail: input.pushServiceAccountEmail,
+              audience: input.pushAudience,
+            },
+          },
+          retryPolicy: { minimumBackoff: "10s", maximumBackoff: "600s" },
+        },
+        input.integrationProjectId,
       );
+
+      return {
+        gcpProjectNumber,
+        topicName: resourceSlug,
+        subscriptionName: resourceSlug,
+        logSinkName: sink.name,
+        logSinkWriterIdentity: sink.writerIdentity,
+      };
+    } catch (error) {
+      const topicPolicyUrl = `https://pubsub.googleapis.com/v1/${topicPath}`;
+      const projectIamUrl = `https://cloudresourcemanager.googleapis.com/v1/projects/${encodeURIComponent(input.gcpProjectId)}`;
+      await bestEffort([
+        ...(projectPolicyChanged && projectPolicyBefore
+          ? [
+              () =>
+                requestJson<void>(
+                  this.fetchImpl,
+                  `${projectIamUrl}:setIamPolicy`,
+                  input.userAccessToken,
+                  {
+                    method: "POST",
+                    body: JSON.stringify({ policy: projectPolicyBefore }),
+                  },
+                ),
+            ]
+          : []),
+        ...(topicPolicyChanged && topicPolicyBefore
+          ? [
+              () =>
+                requestJson<void>(
+                  this.fetchImpl,
+                  `${topicPolicyUrl}:setIamPolicy`,
+                  serviceToken,
+                  {
+                    method: "POST",
+                    body: JSON.stringify({ policy: topicPolicyBefore }),
+                  },
+                  input.integrationProjectId,
+                ),
+            ]
+          : []),
+        ...(sinkCreated
+          ? [
+              () =>
+                deleteResource(
+                  this.fetchImpl,
+                  `https://logging.googleapis.com/v2/projects/${encodeURIComponent(input.gcpProjectId)}/sinks/${resourceSlug}`,
+                  input.userAccessToken,
+                ),
+            ]
+          : []),
+        ...(topicCreated
+          ? [
+              () =>
+                deleteResource(
+                  this.fetchImpl,
+                  `https://pubsub.googleapis.com/v1/${topicPath}`,
+                  serviceToken,
+                  input.integrationProjectId,
+                ),
+            ]
+          : []),
+      ]);
+      throw error;
     }
+  }
 
-    const topicPolicyUrl = `https://pubsub.googleapis.com/v1/${topicPath}`;
-    const topicPolicy = await requestJson<IamPolicy>(
-      this.fetchImpl,
-      `${topicPolicyUrl}:getIamPolicy`,
-      serviceToken,
-      { method: "POST", body: "{}" },
-      input.integrationProjectId,
-    );
-    await requestJson(
-      this.fetchImpl,
-      `${topicPolicyUrl}:setIamPolicy`,
-      serviceToken,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          policy: addMember(topicPolicy, "roles/pubsub.publisher", sink.writerIdentity),
-        }),
-      },
-      input.integrationProjectId,
-    );
-
+  async deprovision(input: GcpDeprovisioningInput): Promise<void> {
+    const serviceToken = await this.serviceAccessToken();
+    const resourceSlug = `superlog-${input.connectionId}`;
     const projectIamUrl = `https://cloudresourcemanager.googleapis.com/v1/projects/${encodeURIComponent(input.gcpProjectId)}`;
     const projectPolicy = await requestJson<IamPolicy>(
       this.fetchImpl,
       `${projectIamUrl}:getIamPolicy`,
       input.userAccessToken,
-      { method: "POST", body: "{}" },
-    );
-    const readerPolicy = addMember(
-      projectPolicy,
-      "roles/monitoring.viewer",
-      `serviceAccount:${input.readerServiceAccountEmail}`,
-    );
-    await requestJson(this.fetchImpl, `${projectIamUrl}:setIamPolicy`, input.userAccessToken, {
-      method: "POST",
-      body: JSON.stringify({ policy: readerPolicy }),
-    });
-
-    await ensureResource(
-      this.fetchImpl,
-      `https://pubsub.googleapis.com/v1/${subscriptionPath}`,
-      serviceToken,
       {
-        topic: topicPath,
-        ackDeadlineSeconds: 30,
-        pushConfig: {
-          pushEndpoint: input.pushEndpoint,
-          oidcToken: {
-            serviceAccountEmail: input.pushServiceAccountEmail,
-            audience: input.pushAudience,
-          },
-        },
-        retryPolicy: { minimumBackoff: "10s", maximumBackoff: "600s" },
+        method: "POST",
+        body: JSON.stringify({ options: { requestedPolicyVersion: 3 } }),
       },
-      input.integrationProjectId,
     );
-
-    return {
-      gcpProjectNumber,
-      topicName: resourceSlug,
-      subscriptionName: resourceSlug,
-      logSinkName: sink.name,
-      logSinkWriterIdentity: sink.writerIdentity,
-    };
+    const readerMember = `serviceAccount:${input.readerServiceAccountEmail}`;
+    const actions: Array<() => Promise<void>> = [
+      () =>
+        deleteResource(
+          this.fetchImpl,
+          `https://pubsub.googleapis.com/v1/projects/${input.integrationProjectId}/subscriptions/${resourceSlug}`,
+          serviceToken,
+          input.integrationProjectId,
+        ),
+      () =>
+        deleteResource(
+          this.fetchImpl,
+          `https://logging.googleapis.com/v2/projects/${encodeURIComponent(input.gcpProjectId)}/sinks/${input.provisioned.logSinkName}`,
+          input.userAccessToken,
+        ),
+      () =>
+        deleteResource(
+          this.fetchImpl,
+          `https://pubsub.googleapis.com/v1/projects/${input.integrationProjectId}/topics/${resourceSlug}`,
+          serviceToken,
+          input.integrationProjectId,
+        ),
+    ];
+    if (hasMember(projectPolicy, "roles/monitoring.viewer", readerMember)) {
+      actions.push(() =>
+        requestJson<void>(this.fetchImpl, `${projectIamUrl}:setIamPolicy`, input.userAccessToken, {
+          method: "POST",
+          body: JSON.stringify({
+            policy: removeMember(projectPolicy, "roles/monitoring.viewer", readerMember),
+          }),
+        }),
+      );
+    }
+    const results = await Promise.allSettled(actions.map((action) => action()));
+    const failures = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (failures.length > 0) throw new AggregateError(failures, "GCP cleanup failed");
   }
 }
 
 async function defaultServiceAccessToken(): Promise<string> {
   const { GoogleAuth } = await import("google-auth-library");
   const scopes = ["https://www.googleapis.com/auth/cloud-platform"];
-  const auth = new GoogleAuth({ scopes });
   const externalAccount = process.env.GCP_WORKLOAD_IDENTITY_CONFIG;
   const client = externalAccount
-    ? auth.fromJSON({ ...JSON.parse(externalAccount), scopes })
-    : await auth.getClient();
+    ? createAwsFederatedGcpClient(externalAccount)
+    : await new GoogleAuth({ scopes }).getClient();
   const token = await client.getAccessToken();
   if (!token.token)
     throw new Error("Application Default Credentials did not return an access token");

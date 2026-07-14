@@ -42,10 +42,20 @@ export type GcpProvisioningInput = {
   pushEndpoint: string;
 };
 
+export type GcpDeprovisioningInput = {
+  connectionId: string;
+  gcpProjectId: string;
+  userAccessToken: string;
+  integrationProjectId: string;
+  readerServiceAccountEmail: string;
+  provisioned: ProvisionedGcpConnection;
+};
+
 export interface GcpGateway {
   authorizationUrl(input: { state: string }): string;
   exchangeCode(code: string): Promise<{ accessToken: string }>;
   provision(input: GcpProvisioningInput): Promise<ProvisionedGcpConnection>;
+  deprovision(input: GcpDeprovisioningInput): Promise<void>;
 }
 
 export interface GcpConnectionRepository {

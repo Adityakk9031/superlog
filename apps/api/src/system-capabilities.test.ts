@@ -28,18 +28,26 @@ test("gcpConnect requires OAuth and integration-owned Pub/Sub configuration", ()
       .gcpConnect,
     false,
   );
+  const complete = {
+    GCP_OAUTH_CLIENT_ID: "id",
+    GCP_OAUTH_CLIENT_SECRET: "secret",
+    GCP_OAUTH_REDIRECT_URI: "https://api.example.com/gcp/oauth/callback",
+    GCP_INTEGRATION_PROJECT_ID: "superlog-observability",
+    GCP_READER_SERVICE_ACCOUNT_EMAIL: "reader@example.iam.gserviceaccount.com",
+    GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL: "push@example.iam.gserviceaccount.com",
+    GCP_PUBSUB_PUSH_ENDPOINT: "https://intake.example.com/gcp/pubsub",
+    GCP_PUBSUB_PUSH_AUDIENCE: "https://intake.example.com/gcp/pubsub",
+    STATE_SIGNING_SECRET: "state-secret",
+    AGENT_SECRETS_KEY: "encryption-key",
+  };
+  assert.equal(buildSystemCapabilities(complete).gcpConnect, true);
   assert.equal(
-    buildSystemCapabilities({
-      GCP_OAUTH_CLIENT_ID: "id",
-      GCP_OAUTH_CLIENT_SECRET: "secret",
-      GCP_OAUTH_REDIRECT_URI: "https://api.example.com/gcp/oauth/callback",
-      GCP_INTEGRATION_PROJECT_ID: "superlog-observability",
-      GCP_READER_SERVICE_ACCOUNT_EMAIL: "reader@example.iam.gserviceaccount.com",
-      GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL: "push@example.iam.gserviceaccount.com",
-      GCP_PUBSUB_PUSH_ENDPOINT: "https://intake.example.com/gcp/pubsub",
-      STATE_SIGNING_SECRET: "state-secret",
-    }).gcpConnect,
-    true,
+    buildSystemCapabilities({ ...complete, AGENT_SECRETS_KEY: undefined }).gcpConnect,
+    false,
+  );
+  assert.equal(
+    buildSystemCapabilities({ ...complete, GCP_PUBSUB_PUSH_AUDIENCE: undefined }).gcpConnect,
+    false,
   );
 });
 

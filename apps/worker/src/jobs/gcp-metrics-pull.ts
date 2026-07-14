@@ -1,4 +1,5 @@
 import { decryptIntegrationSecret, schema } from "@superlog/db";
+import { createAwsFederatedGcpClient } from "@superlog/gcp-auth";
 import { and, eq, isNull } from "drizzle-orm";
 import { GoogleAuth } from "google-auth-library";
 import type { JobDefinition, JobDeps } from "../jobs.js";
@@ -129,17 +130,14 @@ export const job: JobDefinition = {
       log.info({}, "GCP_INTEGRATION_PROJECT_ID not set — GCP metrics pull disabled");
       return null;
     }
-    const auth = new GoogleAuth({
-      scopes: ["https://www.googleapis.com/auth/cloud-platform"],
-      projectId: integrationProjectId,
-    });
     const scopes = ["https://www.googleapis.com/auth/cloud-platform"];
     const externalAccount = process.env.GCP_WORKLOAD_IDENTITY_CONFIG;
+    const auth = new GoogleAuth({ scopes, projectId: integrationProjectId });
     const monitoring = new GoogleMonitoringClient({
       integrationProjectId,
       accessToken: async () => {
         const client = externalAccount
-          ? auth.fromJSON({ ...JSON.parse(externalAccount), scopes })
+          ? createAwsFederatedGcpClient(externalAccount)
           : await auth.getClient();
         const token = await client.getAccessToken();
         if (!token.token) throw new Error("Google ADC did not return an access token");

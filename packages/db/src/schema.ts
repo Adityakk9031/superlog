@@ -2517,6 +2517,9 @@ export const gcpConnections = pgTable(
   (t) => ({
     projectIdx: index("gcp_connections_project_idx").on(t.projectId),
     customerProjectIdx: index("gcp_connections_customer_project_idx").on(t.gcpProjectId),
+    activeProjectCustomerUniq: uniqueIndex("gcp_connections_active_project_customer_idx")
+      .on(t.projectId, t.gcpProjectId)
+      .where(sql`revoked_at IS NULL`),
   }),
 );
 

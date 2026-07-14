@@ -6,7 +6,8 @@ import { closeDb, db, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { GcpGateway } from "./domain.js";
-import { mountGcpAuthed, mountGcpPublic, type GcpConnectConfig } from "./interfaces.js";
+import { type GcpConnectConfig, mountGcpAuthed, mountGcpPublic } from "./interfaces.js";
+import { DrizzleGcpConnectionRepository } from "./repository.js";
 
 process.env.STATE_SIGNING_SECRET ||= "gcp-test-state-secret";
 process.env.AGENT_SECRETS_KEY ||= randomBytes(32).toString("base64");
@@ -24,6 +25,7 @@ const config: GcpConnectConfig = {
 };
 
 const orgIds: string[] = [];
+const userIds: string[] = [];
 
 before(async () => {
   await runMigrations();
@@ -33,6 +35,9 @@ after(async () => {
   try {
     for (const orgId of orgIds.reverse()) {
       await db.delete(schema.orgs).where(eq(schema.orgs.id, orgId));
+    }
+    for (const userId of userIds.reverse()) {
+      await db.delete(schema.users).where(eq(schema.users.id, userId));
     }
   } finally {
     await closeDb();
@@ -49,6 +54,7 @@ async function seedProject() {
     .values({ email: `${tag}@example.com` })
     .returning();
   if (!user) throw new Error("seed user failed");
+  userIds.push(user.id);
   await db.insert(schema.orgMembers).values({ orgId: org.id, userId: user.id, role: "owner" });
   const [project] = await db
     .insert(schema.projects)
@@ -92,6 +98,7 @@ test("a project owner connects GCP without retaining their OAuth token", async (
         subscriptionName: `superlog-${input.connectionId}`,
       };
     },
+    async deprovision() {},
   };
 
   const app = new Hono<{
@@ -140,4 +147,94 @@ test("a project owner connects GCP without retaining their OAuth token", async (
   assert.equal(connected.status, "connected");
   assert.equal(connected.accessToken, undefined);
   assert.equal(connected.refreshToken, undefined);
+});
+
+test("completing an older OAuth tab does not revoke a newer pending connection", async () => {
+  const { user, project } = await seedProject();
+  const [older] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-production",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+    })
+    .returning();
+  const [newer] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-staging",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+    })
+    .returning();
+  assert.ok(older && newer);
+
+  const repository = new DrizzleGcpConnectionRepository();
+  await repository.markConnected(older.id, {
+    gcpProjectNumber: "123456789012",
+    topicName: `superlog-${older.id}`,
+    subscriptionName: `superlog-${older.id}`,
+    logSinkName: `superlog-${older.id}`,
+    logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+  });
+
+  const stillPending = await db.query.gcpConnections.findFirst({
+    where: eq(schema.gcpConnections.id, newer.id),
+  });
+  assert.equal(stillPending?.status, "pending");
+  assert.equal(stillPending?.revokedAt, null);
+});
+
+test("starting the same GCP project twice reuses one active connection", async () => {
+  const { user, project } = await seedProject();
+  const repository = new DrizzleGcpConnectionRepository();
+  const input = {
+    projectId: project.id,
+    gcpProjectId: "acme-production",
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    createdBy: user.id,
+  };
+
+  const first = await repository.create(input);
+  const second = await repository.create(input);
+
+  assert.equal(second.id, first.id);
+  const active = await db.query.gcpConnections.findMany({
+    where: eq(schema.gcpConnections.projectId, project.id),
+  });
+  assert.equal(active.filter((item) => item.revokedAt === null).length, 1);
+});
+
+test("a null install request body is rejected as an invalid project id", async () => {
+  const { org, user, project } = await seedProject();
+  const gateway = {
+    authorizationUrl() {
+      return "https://accounts.google.com/o/oauth2/v2/auth";
+    },
+    async exchangeCode() {
+      return { accessToken: "unused" };
+    },
+    async provision() {
+      throw new Error("unused");
+    },
+    async deprovision() {},
+  } satisfies GcpGateway;
+  const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, { config, gateway });
+
+  const response = await app.request(`/api/projects/${project.id}/gcp/install-url`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "null",
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "gcpProjectId is required" });
 });

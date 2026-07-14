@@ -36,6 +36,12 @@ export type GcpIdTokenVerifier = {
   }>;
 };
 
+export function resolveGcpPubSubPushAudience(
+  env: Partial<Pick<NodeJS.ProcessEnv, "GCP_PUBSUB_PUSH_AUDIENCE" | "GCP_PUBSUB_PUSH_ENDPOINT">>,
+): string | undefined {
+  return env.GCP_PUBSUB_PUSH_AUDIENCE ?? env.GCP_PUBSUB_PUSH_ENDPOINT;
+}
+
 export async function authenticateGcpPubSubPush(input: {
   authorization: string | null | undefined;
   audience: string;

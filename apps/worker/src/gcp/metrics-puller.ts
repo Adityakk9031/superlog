@@ -122,11 +122,12 @@ export async function runGcpMetricsPullOnce(input: {
         } while (pageToken);
       }
 
-      const points = collected.reduce((sum, series) => sum + (series.points?.length ?? 0), 0);
+      const fresh = filterPointsAfterCursor(collected, connection.metricsCursor);
+      const points = fresh.reduce((sum, series) => sum + (series.points?.length ?? 0), 0);
       const delivered =
         points === 0 ||
         (await input.forward({
-          payload: gcpTimeSeriesToOtlp(collected, connection.gcpProjectId),
+          payload: gcpTimeSeriesToOtlp(fresh, connection.gcpProjectId),
           ingestKey: connection.ingestKey,
         }));
       if (!delivered) {
@@ -140,6 +141,18 @@ export async function runGcpMetricsPullOnce(input: {
     }
   }
   return stats;
+}
+
+function filterPointsAfterCursor(series: GcpTimeSeries[], cursor: Date | null): GcpTimeSeries[] {
+  if (!cursor) return series;
+  const cursorMs = cursor.getTime();
+  return series.flatMap((timeSeries) => {
+    const points = (timeSeries.points ?? []).filter((point) => {
+      const endTime = point.interval?.endTime;
+      return !!endTime && Date.parse(endTime) > cursorMs;
+    });
+    return points.length > 0 ? [{ ...timeSeries, points }] : [];
+  });
 }
 
 export function gcpTimeSeriesToOtlp(series: GcpTimeSeries[], gcpProjectId: string) {

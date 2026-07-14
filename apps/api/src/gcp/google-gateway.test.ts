@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import type { GcpConnectConfig } from "./interfaces.js";
 import { GoogleGcpGateway } from "./google-gateway.js";
+import type { GcpConnectConfig } from "./interfaces.js";
 
 const config: GcpConnectConfig = {
   clientId: "client-id",
@@ -110,5 +110,71 @@ test("provisioning keeps metered Pub/Sub resources and API quota in the integrat
     policy.bindings.every((binding) =>
       binding.members.includes(`serviceAccount:${config.readerServiceAccountEmail}`),
     ),
+  );
+
+  const policyReads = requests.filter((request) => request.url.pathname.endsWith(":getIamPolicy"));
+  assert.equal(policyReads.length, 2);
+  assert.ok(
+    policyReads.every(
+      (request) =>
+        (request.body.options as { requestedPolicyVersion?: number } | undefined)
+          ?.requestedPolicyVersion === 3,
+    ),
+  );
+});
+
+test("a later provisioning failure rolls back resources and IAM changes from that attempt", async () => {
+  const requests: Array<{ url: URL; method: string; body: Record<string, unknown> }> = [];
+  const fetchImpl: typeof fetch = async (input, init = {}) => {
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+    );
+    const method = init.method ?? "GET";
+    const body = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    requests.push({ url, method, body });
+    if (url.pathname === "/v3/projects/acme-production") {
+      return Response.json({ name: "projects/123456789012" });
+    }
+    if (url.pathname.endsWith(":getIamPolicy")) {
+      return Response.json({ bindings: [], etag: "original-etag", version: 3 });
+    }
+    if (url.pathname.endsWith(":setIamPolicy")) return Response.json(body.policy ?? {});
+    if (url.pathname.endsWith("/sinks")) {
+      return Response.json({
+        name: "superlog-connection-id",
+        writerIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+      });
+    }
+    if (url.pathname.includes("/subscriptions/") && method === "PUT") {
+      return Response.json({ error: { message: "subscription failed" } }, { status: 500 });
+    }
+    return Response.json({});
+  };
+  const gateway = new GoogleGcpGateway(config, fetchImpl, async () => "service-access-token");
+
+  await assert.rejects(
+    gateway.provision({
+      connectionId: "connection-id",
+      gcpProjectId: "acme-production",
+      userAccessToken: "temporary-user-token",
+      integrationProjectId: config.integrationProjectId,
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      pushServiceAccountEmail: config.pushServiceAccountEmail,
+      pushAudience: config.pushAudience,
+      pushEndpoint: `${config.pushEndpoint}/connection-id`,
+    }),
+    /subscription failed/,
+  );
+
+  const deletes = requests
+    .filter((request) => request.method === "DELETE")
+    .map((request) => request.url.pathname);
+  assert.deepEqual(deletes, [
+    "/v2/projects/acme-production/sinks/superlog-connection-id",
+    "/v1/projects/superlog-observability/topics/superlog-connection-id",
+  ]);
+  assert.equal(
+    requests.filter((request) => request.url.pathname.endsWith(":setIamPolicy")).length,
+    4,
   );
 });

@@ -48,6 +48,7 @@ type CapabilityEnv = Partial<
     | "GCP_READER_SERVICE_ACCOUNT_EMAIL"
     | "GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL"
     | "GCP_PUBSUB_PUSH_ENDPOINT"
+    | "GCP_PUBSUB_PUSH_AUDIENCE"
   >
 >;
 
@@ -98,7 +99,9 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     env.GCP_READER_SERVICE_ACCOUNT_EMAIL &&
     env.GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL &&
     env.GCP_PUBSUB_PUSH_ENDPOINT &&
-    env.STATE_SIGNING_SECRET
+    env.GCP_PUBSUB_PUSH_AUDIENCE &&
+    env.STATE_SIGNING_SECRET &&
+    env.AGENT_SECRETS_KEY
   );
 
   return {

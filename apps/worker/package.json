@@ -72,6 +72,7 @@
     "@superlog/billing": "workspace:*",
     "@superlog/cloudflare": "workspace:*",
     "@superlog/db": "workspace:*",
+    "@superlog/gcp-auth": "workspace:*",
     "@superlog/fingerprint": "workspace:*",
     "@superlog/net-guard": "workspace:*",
     "@superlog/railway": "workspace:*",
