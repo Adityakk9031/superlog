@@ -20,38 +20,35 @@
 //   - autorecovery/tick.ts is the application service
 //
 // This file is now a thin facade that wires real deps and re-exports the
-// two public entry points the worker tick calls.
+// scheduled-job and manual entry points.
 import Anthropic from "@anthropic-ai/sdk";
 import { db } from "@superlog/db";
 import { recordTokenUsage } from "./ai-usage.js";
 import {
-  asLLMClient,
   type AutorecoveryTokenAccountant,
+  asLLMClient,
   runAutorecoveryAgent,
 } from "./autorecovery/agent.js";
 import type { CandidateIncident } from "./autorecovery/domain.js";
 import {
-  type AutorecoveryPolicy,
-  autorecoveryPolicyFromEnv,
-} from "./autorecovery/policy.js";
-import {
   createAutorecoveryMetricsRepository,
   defaultClickhouseClient,
 } from "./autorecovery/metrics-repository.js";
+import { type AutorecoveryPolicy, autorecoveryPolicyFromEnv } from "./autorecovery/policy.js";
 import { createAutorecoveryRepository } from "./autorecovery/repository.js";
 import { createSlackPoster } from "./autorecovery/slack.js";
 import {
+  type TickDeps,
   runAutorecoveryNow as runAutorecoveryNowApp,
   runAutorecoveryTick as runAutorecoveryTickApp,
-  type TickDeps,
 } from "./autorecovery/tick.js";
 import { logger } from "./logger.js";
 
 const MODEL = process.env.ANTHROPIC_AUTORECOVERY_MODEL ?? "claude-sonnet-4-6";
 
-function makeDeps(apiKey: string, policy: AutorecoveryPolicy): TickDeps {
+function makeDeps(apiKey: string, policy: AutorecoveryPolicy, signal?: AbortSignal): TickDeps {
   const repo = createAutorecoveryRepository(db);
-  const metrics = createAutorecoveryMetricsRepository(defaultClickhouseClient);
+  const metrics = createAutorecoveryMetricsRepository(defaultClickhouseClient, signal);
   const slack = createSlackPoster();
   const anthropic = new Anthropic({ apiKey });
   const client = asLLMClient(anthropic);
@@ -62,6 +59,7 @@ function makeDeps(apiKey: string, policy: AutorecoveryPolicy): TickDeps {
     slack,
     logger,
     now: () => new Date(),
+    isCancelled: () => signal?.aborted ?? false,
     selectCandidates: (now, p, opts) => repo.selectCandidates(now, p, opts),
     async runAgent(incident: CandidateIncident) {
       const project = await repo.findProject(incident.projectId);
@@ -84,20 +82,20 @@ function makeDeps(apiKey: string, policy: AutorecoveryPolicy): TickDeps {
         accountant,
         logger,
         maxIterations: policy.maxAgentIterations,
+        signal,
         now: () => new Date(),
       });
     },
   };
 }
 
-// Entry point called from the main worker tick loop. Throttled by
-// `worker_state.cursor` — every worker tick checks the cursor and
-// short-circuits if the last autorecovery pass was recent.
-export async function tickAutorecovery(): Promise<number> {
+// Entry point called from jobs/autorecovery.ts. Throttled by
+// `worker_state.cursor` so a delayed or duplicate cron fire remains harmless.
+export async function tickAutorecovery(signal?: AbortSignal): Promise<number> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return 0;
   const policy = autorecoveryPolicyFromEnv();
-  return runAutorecoveryTickApp(makeDeps(apiKey, policy));
+  return runAutorecoveryTickApp(makeDeps(apiKey, policy, signal));
 }
 
 // Manual trigger used in tests and the end-to-end checkout — bypasses the

@@ -8,6 +8,7 @@ type WorkHandler = (jobs: unknown[]) => Promise<unknown>;
 function fakeBoss() {
   const calls: string[] = [];
   const queues: string[] = [];
+  const queueUpdates: Array<{ name: string; options: unknown }> = [];
   const schedules: Array<{ name: string; cron: string }> = [];
   const workers = new Map<string, WorkHandler>();
   const boss: JobBoss = {
@@ -18,6 +19,10 @@ function fakeBoss() {
       queues.push(name);
       calls.push(`createQueue:${name}:${JSON.stringify(options)}`);
     },
+    async updateQueue(name, options) {
+      queueUpdates.push({ name, options });
+      calls.push(`updateQueue:${name}:${JSON.stringify(options)}`);
+    },
     async work(name, handler) {
       workers.set(name, handler);
       calls.push(`work:${name}`);
@@ -27,13 +32,18 @@ function fakeBoss() {
       calls.push(`schedule:${name}:${cron}`);
     },
   };
-  return { boss, calls, queues, schedules, workers };
+  return { boss, calls, queues, queueUpdates, schedules, workers };
 }
 
 test("registerJobs starts the boss and registers a queue, worker, and cron schedule per job", async () => {
   const fb = fakeBoss();
   const jobs: LoadedJob[] = [
-    { name: "a.sync", schedule: "0 */6 * * *", handler: async () => {} },
+    {
+      name: "a.sync",
+      schedule: "0 */6 * * *",
+      expireInSeconds: 3_600,
+      handler: async () => {},
+    },
     { name: "b.sync", schedule: "*/5 * * * *", handler: async () => {} },
   ];
 
@@ -46,7 +56,8 @@ test("registerJobs starts the boss and registers a queue, worker, and cron sched
     { name: "b.sync", cron: "*/5 * * * *" },
   ]);
   // Each queue is created exclusive (at most one queued-or-active).
-  assert.ok(fb.calls.includes('createQueue:a.sync:{"policy":"exclusive"}'));
+  assert.ok(fb.calls.includes('createQueue:a.sync:{"policy":"exclusive","expireInSeconds":3600}'));
+  assert.deepEqual(fb.queueUpdates, [{ name: "a.sync", options: { expireInSeconds: 3_600 } }]);
 });
 
 test("the registered worker invokes the job handler", async () => {

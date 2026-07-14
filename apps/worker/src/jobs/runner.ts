@@ -17,6 +17,7 @@ import { logger } from "../logger.js";
 export interface JobBoss {
   start(): Promise<unknown>;
   createQueue(name: string, options?: unknown): Promise<unknown>;
+  updateQueue(name: string, options?: unknown): Promise<unknown>;
   work(name: string, handler: (jobs: unknown[]) => Promise<unknown>): Promise<unknown>;
   schedule(name: string, cron: string, data?: unknown, options?: unknown): Promise<unknown>;
 }
@@ -28,7 +29,16 @@ export async function registerJobs(boss: JobBoss, jobs: LoadedJob[]): Promise<vo
   await boss.start();
   for (const job of jobs) {
     try {
-      await boss.createQueue(job.name, { policy: "exclusive" });
+      await boss.createQueue(job.name, {
+        policy: "exclusive",
+        ...(job.expireInSeconds ? { expireInSeconds: job.expireInSeconds } : {}),
+      });
+      // pg-boss createQueue does not update an existing queue. Keep mutable
+      // lease settings in sync across deploys while leaving the immutable
+      // policy on the create path.
+      if (job.expireInSeconds) {
+        await boss.updateQueue(job.name, { expireInSeconds: job.expireInSeconds });
+      }
       await boss.work(job.name, async () => {
         await job.handler();
       });
