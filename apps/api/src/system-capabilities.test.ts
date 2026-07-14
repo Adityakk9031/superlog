@@ -47,7 +47,7 @@ test("gcpConnect requires OAuth and integration-owned Pub/Sub configuration", ()
   );
   assert.equal(
     buildSystemCapabilities({ ...complete, GCP_PUBSUB_PUSH_AUDIENCE: undefined }).gcpConnect,
-    false,
+    true,
   );
 });
 

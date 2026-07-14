@@ -91,6 +91,7 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
   // signed state. Storing the pasted key still needs the at-rest encryption
   // key, so that's the whole gate.
   const renderConnect = !!env.AGENT_SECRETS_KEY;
+  const gcpPushAudience = env.GCP_PUBSUB_PUSH_AUDIENCE ?? env.GCP_PUBSUB_PUSH_ENDPOINT;
   const gcpConnect = !!(
     env.GCP_OAUTH_CLIENT_ID &&
     env.GCP_OAUTH_CLIENT_SECRET &&
@@ -99,7 +100,7 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     env.GCP_READER_SERVICE_ACCOUNT_EMAIL &&
     env.GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL &&
     env.GCP_PUBSUB_PUSH_ENDPOINT &&
-    env.GCP_PUBSUB_PUSH_AUDIENCE &&
+    gcpPushAudience &&
     env.STATE_SIGNING_SECRET &&
     env.AGENT_SECRETS_KEY
   );
