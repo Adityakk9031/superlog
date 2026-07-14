@@ -117,6 +117,7 @@ import {
 } from "./project-mcp-servers.js";
 import { mountProjectRouteContext } from "./project-route-context.js";
 import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
+import { mountGcpAuthed, mountGcpPublic } from "./gcp/interfaces.js";
 import { mountRenderAuthed } from "./render.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
@@ -305,6 +306,7 @@ mountSlackPublic(app);
 mountCloudflarePublic(app);
 mountVercelPublic(app);
 mountRailwayPublic(app);
+mountGcpPublic(app);
 mountFeedbackPublic(app);
 mountProjectMcpOAuthPublic(app);
 mountProjectMcpRelayPublic(app);
@@ -350,6 +352,7 @@ mountSlackAuthed(app);
 mountCloudflareAuthed(app);
 mountVercelAuthed(app);
 mountRailwayAuthed(app);
+mountGcpAuthed(app);
 mountRenderAuthed(app);
 mountSettingsAuthed(app);
 mountProjectMcpServersAuthed(app);
@@ -424,8 +427,8 @@ app.get("/api/me", async (c) => {
   const githubSetupNeeded = accessibleInstalls.length === 0 && !org.githubSetupSkippedAt;
 
   // `hasIngested` decides whether OnboardingGate shows the install wizard. It's
-  // derived from api_keys.last_used_at (set by proxy/src/index.ts on every
-  // successful auth) — no ClickHouse count() queries per page load.
+  // derived from the proxy's project-level telemetry marker (with legacy API
+  // key usage as a fallback) — no ClickHouse count() queries per page load.
   const hasIngested = await projectHasIngested(project.id);
   // `demoMode` is true when a shared demo project is configured and this project
   // hasn't ingested yet, i.e. the server is serving it demo data. The web uses it
