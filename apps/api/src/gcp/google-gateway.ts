@@ -189,13 +189,13 @@ export class GoogleGcpGateway implements GcpGateway {
     const topicPath = `projects/${input.integrationProjectId}/topics/${resourceSlug}`;
     const subscriptionPath = `projects/${input.integrationProjectId}/subscriptions/${resourceSlug}`;
 
-    const project = await requestJson<{ name: string }>(
+    const project = await requestJson<{ projectNumber?: string }>(
       this.fetchImpl,
-      `https://cloudresourcemanager.googleapis.com/v3/projects/${encodeURIComponent(input.gcpProjectId)}`,
+      `https://cloudresourcemanager.googleapis.com/v1/projects/${encodeURIComponent(input.gcpProjectId)}`,
       input.userAccessToken,
       {},
     );
-    const gcpProjectNumber = project.name.split("/").at(-1);
+    const gcpProjectNumber = project.projectNumber;
     if (!gcpProjectNumber) throw new Error("Google Cloud project number was not returned");
 
     let topicCreated = false;

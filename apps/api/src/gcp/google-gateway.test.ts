@@ -35,8 +35,8 @@ test("provisioning keeps metered Pub/Sub resources and API quota in the integrat
     const body = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     requests.push({ url, init, body });
 
-    if (url.pathname === "/v3/projects/acme-production") {
-      return Response.json({ name: "projects/123456789012", projectId: "acme-production" });
+    if (url.pathname === "/v1/projects/acme-production") {
+      return Response.json({ projectNumber: "123456789012", projectId: "acme-production" });
     }
     if (url.pathname.endsWith(":getIamPolicy")) {
       return Response.json({ bindings: [], etag: "etag" });
@@ -63,6 +63,11 @@ test("provisioning keeps metered Pub/Sub resources and API quota in the integrat
     pushEndpoint: `${config.pushEndpoint}/connection-id`,
   });
   assert.equal(provisioned.monitoringViewerGrantCreated, true);
+
+  const projectLookup = requests.find(
+    (request) => request.url.hostname === "cloudresourcemanager.googleapis.com",
+  );
+  assert.equal(projectLookup?.url.pathname, "/v1/projects/acme-production");
 
   const topicCreate = requests.find((request) => request.url.pathname.includes("/topics/"));
   assert.ok(topicCreate);
@@ -133,8 +138,8 @@ test("provisioning reconciles an existing subscription push configuration", asyn
     const method = init.method ?? "GET";
     const body = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     requests.push({ url, method, body });
-    if (url.pathname === "/v3/projects/acme-production") {
-      return Response.json({ name: "projects/123456789012" });
+    if (url.pathname === "/v1/projects/acme-production") {
+      return Response.json({ projectNumber: "123456789012" });
     }
     if (url.pathname.endsWith(":getIamPolicy")) {
       return Response.json({ bindings: [], etag: "etag" });
@@ -197,8 +202,8 @@ test("deprovisioning preserves a monitoring viewer grant that predates the conne
     const body = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     requests.push({ url, init, body });
 
-    if (url.pathname === "/v3/projects/acme-production") {
-      return Response.json({ name: "projects/123456789012" });
+    if (url.pathname === "/v1/projects/acme-production") {
+      return Response.json({ projectNumber: "123456789012" });
     }
     if (url.pathname.endsWith(":getIamPolicy")) {
       return Response.json({
@@ -298,8 +303,8 @@ test("a later provisioning failure rolls back resources and IAM changes from tha
     const method = init.method ?? "GET";
     const body = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     requests.push({ url, method, body });
-    if (url.pathname === "/v3/projects/acme-production") {
-      return Response.json({ name: "projects/123456789012" });
+    if (url.pathname === "/v1/projects/acme-production") {
+      return Response.json({ projectNumber: "123456789012" });
     }
     if (url.pathname.endsWith(":getIamPolicy")) {
       return Response.json({
