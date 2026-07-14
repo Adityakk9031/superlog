@@ -997,6 +997,7 @@ app.post("/api/projects/:projectId/explore/series", async (c) => {
     },
     body.groupBy || undefined,
     step,
+    1_000_000,
   );
   return c.json({ step: `${step.n} ${step.unit}`, rows, sampled });
 });
