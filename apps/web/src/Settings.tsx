@@ -126,6 +126,7 @@ import {
   SkeletonBlock,
   Tile,
 } from "./design/ui";
+import { gcpConnectAction } from "./gcp-settings-model.ts";
 import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
 import { useDemoExploration } from "./onboarding/demoExploration.tsx";
 import {
@@ -2886,6 +2887,7 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
       ? connection.data
       : null;
   const configured = capabilities.data?.gcpConnect ?? true;
+  const connectAction = gcpConnectAction(row?.status ?? null);
 
   return (
     <Tile label="Google Cloud">
@@ -2923,31 +2925,29 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
             GCP connect is not configured on this deployment.
           </p>
         )}
-        {row?.status !== "connected" && (
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <Input
-              value={gcpProjectId}
-              onChange={(event) => setGcpProjectId(event.target.value)}
-              placeholder={row?.gcpProjectId ?? "my-gcp-project-id"}
-              aria-label="Google Cloud project ID"
-              className="min-w-0 flex-1 font-mono"
-            />
-            <Btn
-              size="sm"
-              variant="primary"
-              loading={start.isPending}
-              disabled={
-                !projectId || !configured || start.isPending || gcpProjectId.trim().length < 6
-              }
-              onClick={async () => {
-                const { url } = await start.mutateAsync(gcpProjectId.trim());
-                window.location.href = url;
-              }}
-            >
-              Connect Google Cloud
-            </Btn>
-          </div>
-        )}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Input
+            value={gcpProjectId}
+            onChange={(event) => setGcpProjectId(event.target.value)}
+            placeholder={row?.gcpProjectId ?? "my-gcp-project-id"}
+            aria-label={connectAction.inputLabel}
+            className="min-w-0 flex-1 font-mono"
+          />
+          <Btn
+            size="sm"
+            variant="primary"
+            loading={start.isPending}
+            disabled={
+              !projectId || !configured || start.isPending || gcpProjectId.trim().length < 6
+            }
+            onClick={async () => {
+              const { url } = await start.mutateAsync(gcpProjectId.trim());
+              window.location.href = url;
+            }}
+          >
+            {connectAction.buttonLabel}
+          </Btn>
+        </div>
         {start.error && <p className="text-[12.5px] text-danger">{String(start.error)}</p>}
       </div>
     </Tile>
