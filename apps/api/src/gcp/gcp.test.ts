@@ -194,7 +194,7 @@ test("completing an older OAuth tab does not revoke a newer pending connection",
   assert.equal(stillPending?.revokedAt, null);
 });
 
-test("connecting after an overlapping callback revokes only the connection that was cleaned up", async () => {
+test("connecting after an overlapping callback cannot create a second active connection", async () => {
   const { user, project } = await seedProject();
   const inserted = await db
     .insert(schema.gcpConnections)
@@ -226,25 +226,28 @@ test("connecting after an overlapping callback revokes only the connection that 
   const candidate = inserted[2];
   assert.ok(old && overlapping && candidate);
 
-  await new DrizzleGcpConnectionRepository().markConnected(
-    candidate.id,
-    {
-      gcpProjectNumber: "123456789012",
-      topicName: `superlog-${candidate.id}`,
-      subscriptionName: `superlog-${candidate.id}`,
-      logSinkName: `superlog-${candidate.id}`,
-      logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
-      monitoringViewerGrantCreated: true,
-    },
-    old.id,
+  await assert.rejects(
+    new DrizzleGcpConnectionRepository().markConnected(
+      candidate.id,
+      {
+        gcpProjectNumber: "123456789012",
+        topicName: `superlog-${candidate.id}`,
+        subscriptionName: `superlog-${candidate.id}`,
+        logSinkName: `superlog-${candidate.id}`,
+        logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+        monitoringViewerGrantCreated: true,
+      },
+      old.id,
+    ),
+    /another GCP connection completed first/,
   );
 
   const rows = await db.query.gcpConnections.findMany({
     where: eq(schema.gcpConnections.projectId, project.id),
   });
-  assert.ok(rows.find((row) => row.id === old.id)?.revokedAt);
+  assert.equal(rows.find((row) => row.id === old.id)?.revokedAt, null);
   assert.equal(rows.find((row) => row.id === overlapping.id)?.revokedAt, null);
-  assert.equal(rows.find((row) => row.id === candidate.id)?.status, "connected");
+  assert.equal(rows.find((row) => row.id === candidate.id)?.status, "pending");
 });
 
 test("preserving a shared monitoring grant transfers cleanup ownership", async () => {

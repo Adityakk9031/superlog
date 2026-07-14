@@ -182,6 +182,52 @@ test("no paid Monitoring call starts when the atomic database reservation is exh
   assert.equal(monitoringCalls, 0);
 });
 
+test("a failed Monitoring read refunds its full budget reservation", async () => {
+  const refunds: number[] = [];
+  let seriesRead = 0;
+  const stats = await runGcpMetricsPullOnce({
+    now: () => new Date("2026-07-13T12:00:00Z"),
+    monthlySeriesLimit: 10,
+    store: {
+      async listConnected() {
+        return [
+          {
+            id: "connection-id",
+            projectId: "project-id",
+            gcpProjectId: "acme-production",
+            metricsCursor: null,
+            metricsBudgetMonth: "2026-07",
+            metricsSeriesRead: 0,
+            ingestKey: "sl_public_test",
+          },
+        ];
+      },
+      async reserveBudget(_id, reservation) {
+        const reserved = Math.min(reservation.requested, reservation.monthlyLimit - seriesRead);
+        seriesRead += reserved;
+        return reserved;
+      },
+      async refundBudget(_id, refund) {
+        refunds.push(refund.series);
+        seriesRead -= refund.series;
+      },
+      async saveCursor() {},
+    },
+    monitoring: {
+      async listTimeSeries() {
+        throw new Error("Monitoring unavailable");
+      },
+    },
+    async forward() {
+      throw new Error("failed reads must not be forwarded");
+    },
+  });
+
+  assert.deepEqual(refunds, [10]);
+  assert.equal(seriesRead, 0);
+  assert.deepEqual(stats, { connections: 1, seriesRead: 0, pointsForwarded: 0, errors: 1 });
+});
+
 test("an empty poll does not checkpoint past delayed Cloud Monitoring samples", async () => {
   const savedCursors: Date[] = [];
   await runGcpMetricsPullOnce({

@@ -118,6 +118,34 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     supersededConnectionId: string | null,
   ): Promise<GcpConnectionRecord> {
     return db.transaction(async (tx) => {
+      const [candidate] = await tx
+        .select({ projectId: schema.gcpConnections.projectId })
+        .from(schema.gcpConnections)
+        .where(eq(schema.gcpConnections.id, id))
+        .limit(1)
+        .for("update");
+      if (!candidate) throw new Error("GCP connection not found");
+      const [project] = await tx
+        .select({ id: schema.projects.id })
+        .from(schema.projects)
+        .where(eq(schema.projects.id, candidate.projectId))
+        .limit(1)
+        .for("update");
+      if (!project) throw new Error("GCP project not found");
+      const active = await tx
+        .select({ id: schema.gcpConnections.id })
+        .from(schema.gcpConnections)
+        .where(
+          and(
+            eq(schema.gcpConnections.projectId, candidate.projectId),
+            ne(schema.gcpConnections.id, id),
+            eq(schema.gcpConnections.status, "connected"),
+            isNull(schema.gcpConnections.revokedAt),
+          ),
+        );
+      if (active.some((connection) => connection.id !== supersededConnectionId)) {
+        throw new Error("another GCP connection completed first");
+      }
       const [row] = await tx
         .update(schema.gcpConnections)
         .set({

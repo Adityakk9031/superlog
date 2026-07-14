@@ -119,14 +119,20 @@ export async function runGcpMetricsPullOnce(input: {
           // Reserve the worst-case returned-series charge before making the
           // external call. If persistence fails, no request is sent. Refund
           // unused capacity afterward; a failed refund only under-uses the cap.
-          const page = await input.monitoring.listTimeSeries({
-            gcpProjectId: connection.gcpProjectId,
-            metricType,
-            startTime,
-            endTime,
-            pageSize,
-            ...(pageToken ? { pageToken } : {}),
-          });
+          let page: Awaited<ReturnType<GcpMonitoringReader["listTimeSeries"]>>;
+          try {
+            page = await input.monitoring.listTimeSeries({
+              gcpProjectId: connection.gcpProjectId,
+              metricType,
+              startTime,
+              endTime,
+              pageSize,
+              ...(pageToken ? { pageToken } : {}),
+            });
+          } catch (error) {
+            await input.store.refundBudget(connection.id, { month, series: pageSize });
+            throw error;
+          }
           if (page.timeSeries.length > pageSize) {
             throw new Error("Cloud Monitoring returned more time series than requested");
           }

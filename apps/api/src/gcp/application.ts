@@ -80,12 +80,21 @@ export async function completeGcpConnect(input: {
   } catch (error) {
     let message = error instanceof Error ? error.message : "GCP provisioning failed";
     if (accessToken && superseded && supersededCleanupAttempted) {
+      let restoreSuperseded = true;
       try {
-        await input.gateway.provision(provisioningInput(superseded, accessToken, input.config));
-      } catch (restoreError) {
-        const restoreMessage =
-          restoreError instanceof Error ? restoreError.message : "unknown restore error";
-        message = `${message}; previous connection restore failed: ${restoreMessage}`;
+        const latest = await input.repository.findById(superseded.id);
+        restoreSuperseded = latest?.status === "connected" && !latest.revokedAt;
+      } catch {
+        // Preserve the original recovery behavior when persistence itself is unavailable.
+      }
+      if (restoreSuperseded) {
+        try {
+          await input.gateway.provision(provisioningInput(superseded, accessToken, input.config));
+        } catch (restoreError) {
+          const restoreMessage =
+            restoreError instanceof Error ? restoreError.message : "unknown restore error";
+          message = `${message}; previous connection restore failed: ${restoreMessage}`;
+        }
       }
     }
     if (accessToken && provisioned) {

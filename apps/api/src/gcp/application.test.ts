@@ -279,8 +279,8 @@ test("a failed database supersession restores the previous GCP resources", async
     logSinkWriterIdentity: "serviceAccount:old-cloud-logs@system.gserviceaccount.com",
   };
   const repository = {
-    async findById() {
-      return connection;
+    async findById(id: string) {
+      return id === oldConnection.id ? oldConnection : connection;
     },
     async findCurrent() {
       return oldConnection;
@@ -325,6 +325,70 @@ test("a failed database supersession restores the previous GCP resources", async
     "deprovision-old-connection-id",
     "supersede-old-connection",
     "provision-old-connection-id",
+    "deprovision-connection-id",
+  ]);
+});
+
+test("an overlapping completion does not restore resources for a superseded connection", async () => {
+  const events: string[] = [];
+  const oldConnection: GcpConnectionRecord = {
+    ...connection,
+    id: "old-connection-id",
+    gcpProjectId: "acme-staging",
+    gcpProjectNumber: "987654321098",
+    status: "connected",
+    topicName: "superlog-old-connection-id",
+    subscriptionName: "superlog-old-connection-id",
+    logSinkName: "superlog-old-connection-id",
+    logSinkWriterIdentity: "serviceAccount:old-cloud-logs@system.gserviceaccount.com",
+  };
+  const repository = {
+    async findById(id: string) {
+      if (id === oldConnection.id) return { ...oldConnection, revokedAt: new Date() };
+      return connection;
+    },
+    async findCurrent() {
+      return oldConnection;
+    },
+    async prepareMonitoringGrantRemoval() {
+      return false;
+    },
+    async markProvisioning() {},
+    async ensureIngestKey() {},
+    async markConnected() {
+      events.push("mark-connected");
+      throw new Error("another GCP connection completed first");
+    },
+    async markFailed() {},
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async exchangeCode() {
+      return { accessToken: "temporary-user-token" };
+    },
+    async provision(input: { connectionId: string }) {
+      events.push(`provision-${input.connectionId}`);
+      return provisioned;
+    },
+    async deprovision(input: GcpDeprovisioningInput) {
+      events.push(`deprovision-${input.connectionId}`);
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    completeGcpConnect({
+      connectionId: connection.id,
+      code: "code",
+      repository,
+      gateway,
+      config,
+    }),
+    /another GCP connection completed first/,
+  );
+
+  assert.deepEqual(events, [
+    "provision-connection-id",
+    "deprovision-old-connection-id",
+    "mark-connected",
     "deprovision-connection-id",
   ]);
 });
