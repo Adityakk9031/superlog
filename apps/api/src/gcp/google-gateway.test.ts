@@ -168,21 +168,22 @@ test("provisioning reconciles an existing subscription push configuration", asyn
     (request) => request.url.pathname.includes("/subscriptions/") && request.method === "PATCH",
   );
   assert.ok(patch);
-  assert.equal(
-    patch.url.searchParams.get("updateMask"),
-    "pushConfig,ackDeadlineSeconds,retryPolicy",
-  );
+  assert.equal(patch.url.searchParams.get("updateMask"), null);
   assert.deepEqual(patch.body, {
-    name: "projects/superlog-observability/subscriptions/superlog-connection-id",
-    ackDeadlineSeconds: 30,
-    pushConfig: {
-      pushEndpoint: "https://intake.example.com/new-endpoint/connection-id",
-      oidcToken: {
-        serviceAccountEmail: config.pushServiceAccountEmail,
-        audience: "https://intake.example.com/new-audience",
+    updateMask: "pushConfig,ackDeadlineSeconds,retryPolicy",
+    subscription: {
+      name: "projects/superlog-observability/subscriptions/superlog-connection-id",
+      topic: "projects/superlog-observability/topics/superlog-connection-id",
+      ackDeadlineSeconds: 30,
+      pushConfig: {
+        pushEndpoint: "https://intake.example.com/new-endpoint/connection-id",
+        oidcToken: {
+          serviceAccountEmail: config.pushServiceAccountEmail,
+          audience: "https://intake.example.com/new-audience",
+        },
       },
+      retryPolicy: { minimumBackoff: "10s", maximumBackoff: "600s" },
     },
-    retryPolicy: { minimumBackoff: "10s", maximumBackoff: "600s" },
   });
 });
 

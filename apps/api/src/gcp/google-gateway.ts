@@ -311,15 +311,16 @@ export class GoogleGcpGateway implements GcpGateway {
         const updateMask = "pushConfig,ackDeadlineSeconds,retryPolicy";
         await requestJson(
           this.fetchImpl,
-          `${subscriptionUrl}?updateMask=${encodeURIComponent(updateMask)}`,
+          subscriptionUrl,
           serviceToken,
           {
             method: "PATCH",
             body: JSON.stringify({
-              name: subscriptionPath,
-              ackDeadlineSeconds: subscription.ackDeadlineSeconds,
-              pushConfig: subscription.pushConfig,
-              retryPolicy: subscription.retryPolicy,
+              subscription: {
+                name: subscriptionPath,
+                ...subscription,
+              },
+              updateMask,
             }),
           },
           input.integrationProjectId,
