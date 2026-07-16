@@ -236,6 +236,8 @@ export {
 } from "./agent-pr-provider-reconciliation.js";
 export {
   areAllIncidentPullRequestsMerged,
+  areAllIncidentPullRequestsSettled,
+  latestAgentPullRequestSettlementAt,
   buildAgentPullRequestLifecycleContinuation,
   type AgentPullRequestLifecycleContinuation,
   type AgentPullRequestLifecycleRecord,
@@ -295,6 +297,7 @@ export {
   type IssueClassificationAction,
   type SynthesizeLegacyIncidentIssueOutcomesResult,
 } from "./issue-classification.js";
+export type { IncidentAgentPullRequestSnapshot } from "./incident-repository.js";
 export {
   confirmResolutionProposal,
   createIncidentLifecycle,
@@ -305,6 +308,7 @@ export {
   resolveIncident,
   resolveIncidentWithProof,
   resolveIncidentIfAllAgentPullRequestsMerged,
+  resolveIncidentIfAllAgentPullRequestsSettled,
   reconcileAgentRunCompletedByResolution,
   validateIncidentIssueOutcomes,
   reserveAgentPullRequestBatch,

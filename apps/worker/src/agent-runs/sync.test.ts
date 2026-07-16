@@ -373,9 +373,23 @@ test("an unavailable recovered PR lifecycle resolves only an entirely merged del
     kind: "follow_up",
   });
   assert.deepEqual(planSettledPullRequestFallback([closed, merged], [closed, merged]), {
+    kind: "resolve_settled",
+    pullRequest: merged,
+  });
+  // The merge can be the LAST settle event on a mixed incident (sibling closed
+  // earlier): no later close webhook will arrive, so the settled plan must
+  // fire from the merge itself.
+  assert.deepEqual(planSettledPullRequestFallback([merged], [closed, merged]), {
+    kind: "resolve_settled",
+    pullRequest: merged,
+  });
+  assert.deepEqual(planSettledPullRequestFallback([closed], [closed]), {
+    kind: "resolve_settled",
+    pullRequest: closed,
+  });
+  assert.deepEqual(planSettledPullRequestFallback([closed], [open, closed]), {
     kind: "follow_up",
   });
-  assert.deepEqual(planSettledPullRequestFallback([closed], [closed]), { kind: "follow_up" });
 });
 
 test("a terminal result wins when it lands at the runtime budget boundary", () => {

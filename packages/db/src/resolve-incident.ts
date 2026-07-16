@@ -1,12 +1,19 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
-import { areAllIncidentPullRequestsMerged } from "./agent-pr-lifecycle-continuation.js";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import {
+  areAllIncidentPullRequestsMerged,
+  areAllIncidentPullRequestsSettled,
+} from "./agent-pr-lifecycle-continuation.js";
 import { type DB, db } from "./client.js";
 import { generateCodename } from "./codename.js";
 import {
   type IncidentResolutionProof,
   loadCurrentIncidentResolutionProof,
 } from "./incident-pr-resolution.js";
-import { type Tx, createIncidentRepository } from "./incident-repository.js";
+import {
+  type IncidentAgentPullRequestSnapshot,
+  type Tx,
+  createIncidentRepository,
+} from "./incident-repository.js";
 import {
   assertIncidentSourceState,
   buildAgentRunIncidentPatch,
@@ -502,6 +509,114 @@ export function createIncidentLifecycle(database: DB = db) {
     return result;
   };
 
+  // Shared body of the PR-gated resolves. The predicate over the incident's
+  // current PR states is the only difference between the all-merged and
+  // all-settled variants; everything else (lock ordering, batch reservation
+  // guard, dedupe) must stay identical so batched PRs cannot drift
+  // semantically between the two paths. The resolve input is built from the
+  // locked PR snapshot (not a caller pre-read) so concurrent sibling merge/
+  // close webhooks cannot skew the resolution's attribution, and receives the
+  // current epoch boundary (the last manual reopen) so it never credits a PR
+  // the human already overrode by reopening.
+  const resolveIfIncidentPullRequestsSatisfy = async (
+    opts: {
+      incidentId: string;
+      // When the settle event driving this resolve occurred. Evidence that
+      // predates the incident's last reopen belongs to a previous epoch — a
+      // human who reopened did so knowing those PRs were settled, so a stale
+      // settle-webhook redelivery must not flip the incident closed again.
+      settlementEvidenceAt?: Date;
+    },
+    pullRequestsPermitResolution: (pullRequests: Array<{ state: schema.AgentPrState }>) => boolean,
+    inputForPullRequests: (
+      pullRequests: IncidentAgentPullRequestSnapshot[],
+      epoch: { reopenedAt: Date | null },
+    ) => ResolveIncidentInput,
+  ): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> => {
+    const { incidentId } = opts;
+    const result = await repository.transaction(async (tx) => {
+      // `recordOpenedAgentPullRequest` takes this same Incident lock before
+      // inserting a PR. The winner is therefore definitive: a PR inserted
+      // first appears in this snapshot, while a resolution committed first
+      // prevents the late PR from joining the closed Incident.
+      const incident = await repository.lockOpenIncidentInTx(tx, incidentId);
+      if (!incident) {
+        return {
+          disposition: "incident_not_open" as const,
+          resolved: false as const,
+          resolvedIssueCount: 0 as const,
+        };
+      }
+      const pendingBatch = await tx.query.incidentEvents.findFirst({
+        where: and(
+          eq(schema.incidentEvents.incidentId, incidentId),
+          eq(schema.incidentEvents.kind, AGENT_PULL_REQUEST_BATCH_RESERVATION_KIND),
+          isNull(schema.incidentEvents.processedAt),
+        ),
+        columns: { id: true },
+      });
+      if (pendingBatch) {
+        return {
+          disposition: "pull_requests_pending" as const,
+          resolved: false as const,
+          resolvedIssueCount: 0 as const,
+        };
+      }
+      const pullRequests = await repository.listAgentPullRequestStatesInTx(tx, incidentId);
+      if (!pullRequestsPermitResolution(pullRequests)) {
+        return {
+          disposition: "pull_requests_pending" as const,
+          resolved: false as const,
+          resolvedIssueCount: 0 as const,
+        };
+      }
+      const lastReopen = await tx.query.incidentEvents.findFirst({
+        where: and(
+          eq(schema.incidentEvents.incidentId, incidentId),
+          eq(schema.incidentEvents.kind, "incident_reopened"),
+        ),
+        orderBy: [desc(schema.incidentEvents.createdAt)],
+        columns: { createdAt: true },
+      });
+      const reopenedAt = lastReopen?.createdAt ?? null;
+      if (
+        reopenedAt &&
+        opts.settlementEvidenceAt &&
+        reopenedAt.getTime() > opts.settlementEvidenceAt.getTime()
+      ) {
+        return {
+          disposition: "resolution_event_already_consumed" as const,
+          resolved: false as const,
+          resolvedIssueCount: 0 as const,
+        };
+      }
+      const input = inputForPullRequests(pullRequests, { reopenedAt });
+      const resolution = await resolveIncidentInTx(tx, input, repository, incident);
+      if (resolution.rejectionReason === "resolution_event_already_consumed") {
+        return {
+          disposition: "resolution_event_already_consumed" as const,
+          resolved: false as const,
+          resolvedIssueCount: 0 as const,
+        };
+      }
+      return resolution.resolved
+        ? {
+            disposition: "resolved" as const,
+            resolved: true as const,
+            resolvedIssueCount: resolution.resolvedIssueCount,
+          }
+        : {
+            disposition: "incident_not_open" as const,
+            resolved: false as const,
+            resolvedIssueCount: 0 as const,
+          };
+    });
+    if (result.disposition === "resolved") {
+      await emitIncidentResolved(database, incidentId);
+    }
+    return result;
+  };
+
   return {
     // Open an incident in its own transaction.
     async createOpen(opts: CreateOpenIncidentOpts): Promise<schema.Incident> {
@@ -548,66 +663,32 @@ export function createIncidentLifecycle(database: DB = db) {
     async resolveIfAllAgentPullRequestsMerged(
       input: ResolveIncidentInput & { kind: "agent_pr_merged" },
     ): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
-      const result = await repository.transaction(async (tx) => {
-        // `recordOpenedAgentPullRequest` takes this same Incident lock before
-        // inserting a PR. The winner is therefore definitive: a PR inserted
-        // first appears in this snapshot, while a resolution committed first
-        // prevents the late PR from joining the closed Incident.
-        const incident = await repository.lockOpenIncidentInTx(tx, input.incidentId);
-        if (!incident) {
-          return {
-            disposition: "incident_not_open" as const,
-            resolved: false as const,
-            resolvedIssueCount: 0 as const,
-          };
-        }
-        const pendingBatch = await tx.query.incidentEvents.findFirst({
-          where: and(
-            eq(schema.incidentEvents.incidentId, input.incidentId),
-            eq(schema.incidentEvents.kind, AGENT_PULL_REQUEST_BATCH_RESERVATION_KIND),
-            isNull(schema.incidentEvents.processedAt),
-          ),
-          columns: { id: true },
-        });
-        if (pendingBatch) {
-          return {
-            disposition: "pull_requests_pending" as const,
-            resolved: false as const,
-            resolvedIssueCount: 0 as const,
-          };
-        }
-        const pullRequests = await repository.listAgentPullRequestStatesInTx(tx, input.incidentId);
-        if (!areAllIncidentPullRequestsMerged(pullRequests)) {
-          return {
-            disposition: "pull_requests_pending" as const,
-            resolved: false as const,
-            resolvedIssueCount: 0 as const,
-          };
-        }
-        const resolution = await resolveIncidentInTx(tx, input, repository, incident);
-        if (resolution.rejectionReason === "resolution_event_already_consumed") {
-          return {
-            disposition: "resolution_event_already_consumed" as const,
-            resolved: false as const,
-            resolvedIssueCount: 0 as const,
-          };
-        }
-        return resolution.resolved
-          ? {
-              disposition: "resolved" as const,
-              resolved: true as const,
-              resolvedIssueCount: resolution.resolvedIssueCount,
-            }
-          : {
-              disposition: "incident_not_open" as const,
-              resolved: false as const,
-              resolvedIssueCount: 0 as const,
-            };
-      });
-      if (result.disposition === "resolved") {
-        await emitIncidentResolved(database, input.incidentId);
-      }
-      return result;
+      return resolveIfIncidentPullRequestsSatisfy(
+        { incidentId: input.incidentId, settlementEvidenceAt: input.resolvedAt },
+        areAllIncidentPullRequestsMerged,
+        () => input,
+      );
+    },
+
+    // The settled variant backs the closed-PR policy: once every incident PR
+    // is merged or closed (none open), a close is the human's final word on
+    // the delivery and the incident resolves without waiting for a session or
+    // a confirmation click. `buildInput` runs on the locked PR snapshot so the
+    // caller picks the kind from consistent state: `agent_pr_merged` when a
+    // sibling fix landed in the current epoch, `agent_pr_closed` otherwise.
+    async resolveIfAllAgentPullRequestsSettled(opts: {
+      incidentId: string;
+      settlementEvidenceAt: Date;
+      buildInput(
+        pullRequests: IncidentAgentPullRequestSnapshot[],
+        epoch: { reopenedAt: Date | null },
+      ): ResolveIncidentInput & { kind: "agent_pr_merged" | "agent_pr_closed" };
+    }): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
+      return resolveIfIncidentPullRequestsSatisfy(
+        { incidentId: opts.incidentId, settlementEvidenceAt: opts.settlementEvidenceAt },
+        areAllIncidentPullRequestsSettled,
+        opts.buildInput,
+      );
     },
 
     async applyAgentRunResult(opts: {
@@ -912,6 +993,17 @@ export async function resolveIncidentIfAllAgentPullRequestsMerged(
   input: ResolveIncidentInput & { kind: "agent_pr_merged" },
 ): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
   return createIncidentLifecycle(db).resolveIfAllAgentPullRequestsMerged(input);
+}
+
+export async function resolveIncidentIfAllAgentPullRequestsSettled(opts: {
+  incidentId: string;
+  settlementEvidenceAt: Date;
+  buildInput(
+    pullRequests: IncidentAgentPullRequestSnapshot[],
+    epoch: { reopenedAt: Date | null },
+  ): ResolveIncidentInput & { kind: "agent_pr_merged" | "agent_pr_closed" };
+}): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
+  return createIncidentLifecycle(db).resolveIfAllAgentPullRequestsSettled(opts);
 }
 
 // Body of the resolve operation, parameterised on a transaction handle.

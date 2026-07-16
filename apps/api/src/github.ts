@@ -3,19 +3,22 @@ import {
   AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT,
   type AgentPullRequestLifecycleContinuation,
   type AgentPullRequestProviderObservation as GithubPullRequestProviderObservation,
+  type IncidentAgentPullRequestSnapshot,
   type ResolveIncidentAfterAgentPullRequestsMergedResult,
+  type ResolveIncidentInput,
   applyAgentPullRequestState,
   buildAgentPullRequestLifecycleContinuation,
   completeAgentPullRequestReviewContinuationClaim,
   db,
   isAgentPullRequestReviewEventKind,
+  latestAgentPullRequestSettlementAt,
   listAccessibleGithubInstallsForProject,
   reconcileAgentPullRequestProviderObservation,
   recordAgentPullRequestReviewEvent,
   recordInboundInteraction,
   releaseAgentPullRequestReviewContinuationClaim,
   releaseAgentPullRequestReviewLimitNotification,
-  resolveIncidentIfAllAgentPullRequestsMerged,
+  resolveIncidentIfAllAgentPullRequestsSettled,
   schema,
   syncLoopsContactsForOrg,
   unblockAgentRunsAfterGithubAccess,
@@ -854,7 +857,7 @@ async function handleAgentPrWebhook(
         mergedByLogin: canonicalPr.mergedByLogin,
       });
     } else if (appliedState === "closed" && canonicalPr.state === "closed") {
-      await maybeResumeIncidentForClosedAgentPr({
+      await resolveOrResumeIncidentForClosedAgentPr({
         agentPr: canonicalPr,
         closedByLogin: appliedObservation.providerSnapshotAuthoritative
           ? null
@@ -1020,36 +1023,143 @@ export async function resumeOrResolveIncidentForMergedAgentPr(
   return resolution.disposition;
 }
 
-// An agent PR was closed without merging. Resume the session so the agent can
-// react (per the spec: if the close context shows the issue is noise, silence
-// it and resolve; otherwise decide the next step). No fallback action — the
-// incident simply stays open for a human or a later run.
-async function maybeResumeIncidentForClosedAgentPr(opts: {
+// An agent PR was closed without merging. Closing the last live agent PR is
+// the human's decision on the delivery itself, so the incident resolves
+// deterministically instead of waiting for a confirmation nobody sends: as
+// `agent_pr_merged` when a sibling fix did land, as `agent_pr_closed` when
+// nothing merged. Issues cascade to resolved, so a real recurrence re-pages
+// through the ordinary resolved→recur path. While other PRs are still open
+// the close is only context — it resumes the session (when one exists) so the
+// agent keeps driving the remaining delivery.
+export type ClosedAgentPullRequestContinuationDisposition =
+  | MergedAgentPullRequestSessionContinuation
+  | Exclude<
+      ResolveIncidentAfterAgentPullRequestsMergedResult["disposition"],
+      "pull_requests_pending"
+    >;
+
+type ClosedAgentPullRequestContinuationInput = {
   agentPr: schema.AgentPullRequest;
   closedByLogin: string | null;
   closedAt: Date;
-}): Promise<void> {
-  const { agentPr, closedByLogin } = opts;
+};
+
+type ClosedAgentPullRequestContinuationDependencies = {
+  resolveSettled(opts: {
+    incidentId: string;
+    settlementEvidenceAt: Date;
+    buildInput(
+      pullRequests: IncidentAgentPullRequestSnapshot[],
+      epoch: { reopenedAt: Date | null },
+    ): ResolveIncidentInput & { kind: "agent_pr_merged" | "agent_pr_closed" };
+  }): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult>;
+  runResolvedSideEffects(
+    incidentId: string,
+    resolutionProof: { agentRunId: string | null; eventDedupeKey: string },
+  ): Promise<void>;
+  continueInSession(opts: {
+    agentPr: schema.AgentPullRequest;
+    continuation: AgentPullRequestLifecycleContinuation;
+  }): Promise<MergedAgentPullRequestSessionContinuation>;
+};
+
+export async function resolveOrResumeIncidentForClosedAgentPr(
+  opts: ClosedAgentPullRequestContinuationInput,
+  dependencies: ClosedAgentPullRequestContinuationDependencies = {
+    resolveSettled: resolveIncidentIfAllAgentPullRequestsSettled,
+    runResolvedSideEffects: runResolvedIncidentSideEffectsWithGithub,
+    continueInSession: resumeIncidentSessionForPrEvent,
+  },
+): Promise<ClosedAgentPullRequestContinuationDisposition> {
+  const { agentPr, closedByLogin, closedAt } = opts;
+  const closedBy = closedByLogin ? ` by @${closedByLogin}` : "";
+  const eventDedupeKey = `incident_resolved:agent_pr_closed:${agentPr.id}:${closedAt.getTime()}`;
+  const resolution = await dependencies.resolveSettled({
+    incidentId: agentPr.incidentId,
+    settlementEvidenceAt: closedAt,
+    // Built from the PR snapshot taken under the incident lock, so a sibling
+    // merge racing this close cannot skew the attribution: a landed fix is
+    // credited as `agent_pr_merged`, a plain close resolves as
+    // `agent_pr_closed`. Only current-epoch merges count — a PR merged before
+    // the incident's last manual reopen is a fix the human already overrode.
+    buildInput: (pullRequests, epoch) => {
+      const mergedSibling =
+        pullRequests
+          .filter(
+            (pullRequest) =>
+              pullRequest.state === "merged" &&
+              pullRequest.mergedAt &&
+              (!epoch.reopenedAt || pullRequest.mergedAt.getTime() > epoch.reopenedAt.getTime()),
+          )
+          .sort((a, b) => (a.mergedAt?.getTime() ?? 0) - (b.mergedAt?.getTime() ?? 0))
+          .at(-1) ?? null;
+      return {
+        incidentId: agentPr.incidentId,
+        ...(mergedSibling
+          ? {
+              kind: "agent_pr_merged" as const,
+              reasonCode: "agent_pr_merged",
+              reasonText: `Resolved because agent PR #${mergedSibling.prNumber} (${mergedSibling.repoFullName}) was merged and the last live agent PR #${agentPr.prNumber} was closed without merge${closedBy}.`,
+              eventSummary: `Incident resolved after PR #${agentPr.prNumber} was closed; fix PR #${mergedSibling.prNumber} is merged.`,
+            }
+          : {
+              kind: "agent_pr_closed" as const,
+              reasonCode: "agent_pr_closed",
+              reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was closed without merge${closedBy} and no agent PRs remain open.`,
+              eventSummary: `Incident resolved because PR #${agentPr.prNumber} was closed without merge.`,
+            }),
+        agentRunId: agentPr.agentRunId,
+        resolvingAgentRunId: null,
+        eventDetail: {
+          agentPrId: agentPr.id,
+          repoFullName: agentPr.repoFullName,
+          prNumber: agentPr.prNumber,
+          prUrl: agentPr.url,
+          closedByLogin,
+          ...(mergedSibling
+            ? { mergedAgentPrId: mergedSibling.id, mergedPrNumber: mergedSibling.prNumber }
+            : {}),
+        },
+        eventDedupeKey,
+        // The delivery finished at the latest settle across the snapshot —
+        // stamping this close's time when a sibling settled later would
+        // backdate the resolution.
+        resolvedAt: latestAgentPullRequestSettlementAt(pullRequests) ?? closedAt,
+      };
+    },
+  });
+  if (resolution.disposition === "resolved") {
+    await dependencies.runResolvedSideEffects(agentPr.incidentId, {
+      agentRunId: agentPr.agentRunId,
+      eventDedupeKey,
+    });
+    return "resolved";
+  }
+  if (resolution.disposition !== "pull_requests_pending") {
+    return resolution.disposition;
+  }
   const continuation = buildAgentPullRequestLifecycleContinuation({
     pullRequest: {
       ...agentPr,
       state: "closed",
-      closedAt: opts.closedAt,
+      closedAt,
     },
     actorLogin: closedByLogin,
-    occurredAt: opts.closedAt,
+    occurredAt: closedAt,
   });
   if (!continuation) throw new Error("closed PR did not produce a lifecycle continuation");
-  await resumeIncidentSessionForPrEvent({
-    agentPr,
-    continuation,
-  }).catch((err) => {
-    log.warn(
-      { err, agent_pr_id: agentPr.id, incident_id: agentPr.incidentId },
-      "failed to resume session for closed agent PR",
-    );
-    return false;
-  });
+  return dependencies
+    .continueInSession({
+      agentPr,
+      continuation,
+    })
+    .catch((err) => {
+      log.warn(
+        { err, agent_pr_id: agentPr.id, incident_id: agentPr.incidentId },
+        "failed to resume session for closed agent PR",
+      );
+      return "no_resumable_session" as const;
+    });
 }
 
 async function resolveIncidentForMergedAgentPr(opts: {
@@ -1060,53 +1170,68 @@ async function resolveIncidentForMergedAgentPr(opts: {
 }): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
   const { agentPr, mergedAt, mergedByLogin } = opts;
   const resolutionEventDedupeKey = `incident_resolved:agent_pr:${agentPr.id}`;
-  const resolution = await resolveIncidentIfAllAgentPullRequestsMerged({
+  // Settled guard, not all-merged: a sibling PR closed without merge must not
+  // block this merge from resolving the incident — on a mixed incident the
+  // merge can be the last settle event, with no later close to fire the
+  // policy.
+  const resolution = await resolveIncidentIfAllAgentPullRequestsSettled({
     incidentId: agentPr.incidentId,
-    kind: "agent_pr_merged",
-    reasonCode: "agent_pr_merged",
-    reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was merged${
-      mergedByLogin ? ` by @${mergedByLogin}` : ""
-    }${!mergedByLogin && opts.source ? ` (${opts.source})` : ""}.`,
-    agentRunId: agentPr.agentRunId,
-    resolvingAgentRunId: null,
-    eventSummary: `Incident resolved because PR #${agentPr.prNumber} was merged.`,
-    eventDetail: {
-      agentPrId: agentPr.id,
-      repoFullName: agentPr.repoFullName,
-      prNumber: agentPr.prNumber,
-      prUrl: agentPr.url,
-      mergedByLogin,
-      ...(opts.source ? { source: opts.source } : {}),
-    },
-    eventDedupeKey: resolutionEventDedupeKey,
-    resolvedAt: mergedAt,
+    settlementEvidenceAt: mergedAt,
+    buildInput: (pullRequests) => ({
+      incidentId: agentPr.incidentId,
+      kind: "agent_pr_merged" as const,
+      reasonCode: "agent_pr_merged",
+      reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was merged${
+        mergedByLogin ? ` by @${mergedByLogin}` : ""
+      }${!mergedByLogin && opts.source ? ` (${opts.source})` : ""}.`,
+      agentRunId: agentPr.agentRunId,
+      resolvingAgentRunId: null,
+      eventSummary: `Incident resolved because PR #${agentPr.prNumber} was merged.`,
+      eventDetail: {
+        agentPrId: agentPr.id,
+        repoFullName: agentPr.repoFullName,
+        prNumber: agentPr.prNumber,
+        prUrl: agentPr.url,
+        mergedByLogin,
+        ...(opts.source ? { source: opts.source } : {}),
+      },
+      eventDedupeKey: resolutionEventDedupeKey,
+      resolvedAt: latestAgentPullRequestSettlementAt(pullRequests) ?? mergedAt,
+    }),
   });
   if (resolution.disposition === "resolved") {
-    await runResolvedIncidentSideEffectsForIncident({
-      incidentId: agentPr.incidentId,
-      resolutionProof: {
-        agentRunId: agentPr.agentRunId,
-        eventDedupeKey: resolutionEventDedupeKey,
-      },
-      closePullRequest: (pr) =>
-        closeAgentPullRequestOnGithub({
-          installationId: pr.githubInstallationId,
-          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
-          repoFullName: pr.repoFullName,
-          prNumber: pr.prNumber,
-          prNodeId: pr.prNodeId,
-        }),
-      reopenPullRequest: (pr) =>
-        reopenAgentPullRequestOnGithub({
-          installationId: pr.githubInstallationId,
-          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
-          repoFullName: pr.repoFullName,
-          prNumber: pr.prNumber,
-          prNodeId: pr.prNodeId,
-        }),
+    await runResolvedIncidentSideEffectsWithGithub(agentPr.incidentId, {
+      agentRunId: agentPr.agentRunId,
+      eventDedupeKey: resolutionEventDedupeKey,
     });
   }
   return resolution;
+}
+
+async function runResolvedIncidentSideEffectsWithGithub(
+  incidentId: string,
+  resolutionProof: { agentRunId: string | null; eventDedupeKey: string },
+): Promise<void> {
+  await runResolvedIncidentSideEffectsForIncident({
+    incidentId,
+    resolutionProof,
+    closePullRequest: (pr) =>
+      closeAgentPullRequestOnGithub({
+        installationId: pr.githubInstallationId,
+        fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+        repoFullName: pr.repoFullName,
+        prNumber: pr.prNumber,
+        prNodeId: pr.prNodeId,
+      }),
+    reopenPullRequest: (pr) =>
+      reopenAgentPullRequestOnGithub({
+        installationId: pr.githubInstallationId,
+        fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+        repoFullName: pr.repoFullName,
+        prNumber: pr.prNumber,
+        prNodeId: pr.prNodeId,
+      }),
+  });
 }
 
 type EligiblePrComment = {

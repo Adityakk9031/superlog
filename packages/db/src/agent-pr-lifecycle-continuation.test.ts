@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   areAllIncidentPullRequestsMerged,
+  areAllIncidentPullRequestsSettled,
   buildAgentPullRequestLifecycleContinuation,
+  latestAgentPullRequestSettlementAt,
 } from "./agent-pr-lifecycle-continuation.js";
 
 test("all Incident PRs must be merged before merge fallback may resolve", () => {
@@ -11,6 +13,31 @@ test("all Incident PRs must be merged before merge fallback may resolve", () => 
   assert.equal(areAllIncidentPullRequestsMerged([{ state: "merged" }, { state: "merged" }]), true);
   assert.equal(areAllIncidentPullRequestsMerged([{ state: "merged" }, { state: "open" }]), false);
   assert.equal(areAllIncidentPullRequestsMerged([{ state: "merged" }, { state: "closed" }]), false);
+});
+
+test("all Incident PRs must be settled before a close may resolve", () => {
+  assert.equal(areAllIncidentPullRequestsSettled([]), false);
+  assert.equal(areAllIncidentPullRequestsSettled([{ state: "closed" }]), true);
+  assert.equal(areAllIncidentPullRequestsSettled([{ state: "merged" }, { state: "closed" }]), true);
+  assert.equal(areAllIncidentPullRequestsSettled([{ state: "merged" }, { state: "merged" }]), true);
+  assert.equal(areAllIncidentPullRequestsSettled([{ state: "closed" }, { state: "open" }]), false);
+});
+
+test("a settled resolution is stamped at the latest merge or close across the incident's PRs", () => {
+  const earlyClose = { mergedAt: null, closedAt: new Date("2026-07-14T08:00:00.000Z") };
+  const lateMerge = { mergedAt: new Date("2026-07-15T09:00:00.000Z"), closedAt: null };
+
+  assert.equal(latestAgentPullRequestSettlementAt([]), null);
+  assert.equal(latestAgentPullRequestSettlementAt([{ mergedAt: null, closedAt: null }]), null);
+  assert.deepEqual(latestAgentPullRequestSettlementAt([earlyClose]), earlyClose.closedAt);
+  assert.deepEqual(
+    latestAgentPullRequestSettlementAt([earlyClose, lateMerge]),
+    lateMerge.mergedAt,
+  );
+  assert.deepEqual(
+    latestAgentPullRequestSettlementAt([lateMerge, earlyClose]),
+    lateMerge.mergedAt,
+  );
 });
 
 test("buildAgentPullRequestLifecycleContinuation describes merged and closed PR events", () => {
