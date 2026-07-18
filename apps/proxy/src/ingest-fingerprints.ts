@@ -29,6 +29,7 @@ type StampInput = {
 export type StampedIngestPayload = {
   body: Buffer;
   stampedCount: number;
+  strippedCount: number;
 };
 
 // Fingerprint stamping deserializes the whole body (JSON.parse / protobuf decode) and
@@ -42,7 +43,8 @@ export function stampIssueFingerprintsWithinLimit(
   input: StampInput,
   maxBytes: number = MAX_FINGERPRINT_BODY_BYTES,
 ): StampedIngestPayload {
-  if (input.body.byteLength > maxBytes) return { body: input.body, stampedCount: 0 };
+  if (input.body.byteLength > maxBytes)
+    return { body: input.body, stampedCount: 0, strippedCount: 0 };
   return stampIssueFingerprints(input);
 }
 
@@ -65,6 +67,12 @@ export function stampIssueFingerprintsFailOpen(
         "stamped issue fingerprints on ingest payload",
       );
     }
+    if (stamped.strippedCount > 0) {
+      logger.warn(
+        { path: input.path, projectId: input.projectId, strippedCount: stamped.strippedCount },
+        "stripped client-supplied superlog.issue_fingerprint attributes on ingest payload",
+      );
+    }
     return stamped.body;
   } catch (err) {
     logger.warn(
@@ -76,7 +84,7 @@ export function stampIssueFingerprintsFailOpen(
 }
 
 export function stampIssueFingerprints(input: StampInput): StampedIngestPayload {
-  if (input.contentEncoding) return { body: input.body, stampedCount: 0 };
+  if (input.contentEncoding) return { body: input.body, stampedCount: 0, strippedCount: 0 };
 
   if (input.path === "/v1/traces" && isJsonContentType(input.contentType)) {
     return stampJsonTraceFingerprints(input.body);
@@ -87,7 +95,7 @@ export function stampIssueFingerprints(input: StampInput): StampedIngestPayload 
   if (input.path === "/v1/logs" && isJsonContentType(input.contentType)) {
     return stampJsonLogFingerprints(input.body);
   }
-  return { body: input.body, stampedCount: 0 };
+  return { body: input.body, stampedCount: 0, strippedCount: 0 };
 }
 
 function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
@@ -135,8 +143,9 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
   // Re-serialize if anything changed — stripping alone mutates the parsed
   // object in memory but the caller receives the original Buffer unless we
   // re-encode here.
-  if (stampedCount === 0 && strippedCount === 0) return { body, stampedCount };
-  return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
+  if (stampedCount === 0 && strippedCount === 0)
+    return { body, stampedCount: 0, strippedCount: 0 };
+  return { body: Buffer.from(JSON.stringify(payload)), stampedCount, strippedCount };
 }
 
 function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
@@ -182,8 +191,13 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
   // Re-serialize if anything changed — stripping alone mutates the parsed
   // object in memory but the caller receives the original Buffer unless we
   // re-encode here.
-  if (stampedCount === 0 && strippedCount === 0) return { body, stampedCount };
-  return { body: Buffer.from(ExportTraceServiceRequest.encode(payload).finish()), stampedCount };
+  if (stampedCount === 0 && strippedCount === 0)
+    return { body, stampedCount: 0, strippedCount: 0 };
+  return {
+    body: Buffer.from(ExportTraceServiceRequest.encode(payload).finish()),
+    stampedCount,
+    strippedCount,
+  };
 }
 
 function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
@@ -232,8 +246,9 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
   // Re-serialize if anything changed — stripping alone mutates the parsed
   // object in memory but the caller receives the original Buffer unless we
   // re-encode here.
-  if (stampedCount === 0 && strippedCount === 0) return { body, stampedCount };
-  return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
+  if (stampedCount === 0 && strippedCount === 0)
+    return { body, stampedCount: 0, strippedCount: 0 };
+  return { body: Buffer.from(JSON.stringify(payload)), stampedCount, strippedCount };
 }
 
 function isJsonContentType(contentType: string): boolean {

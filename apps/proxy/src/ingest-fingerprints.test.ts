@@ -355,3 +355,41 @@ test("stampIssueFingerprints strips client-supplied fingerprint from non-excepti
     "value",
   );
 });
+
+test("stampIssueFingerprintsFailOpen logs a warning when client-supplied fingerprints are stripped", () => {
+  const body = Buffer.from(
+    JSON.stringify({
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                {
+                  severityText: "INFO",
+                  body: { stringValue: "info" },
+                  attributes: [
+                    { key: "superlog.issue_fingerprint", value: { stringValue: "fakefp" } },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  const logger = captureLogger();
+
+  stampIssueFingerprintsFailOpen(
+    { path: "/v1/logs", contentType: "application/json", body, projectId: "p1" },
+    logger,
+  );
+
+  const warnCall = logger.calls.find((c) => c.level === "warn");
+  assert.ok(warnCall, "should have logged a warn call");
+  assert.equal(warnCall.obj.strippedCount, 1);
+  assert.equal(
+    warnCall.msg,
+    "stripped client-supplied superlog.issue_fingerprint attributes on ingest payload",
+  );
+});
