@@ -222,7 +222,9 @@ test("stampIssueFingerprintsFailOpen forwards the original body when stamping th
 
   assert.equal(result, body);
   assert.equal(stamped, false);
-  assert.equal(logger.calls.some((c) => c.level === "warn"), true);
+  const warnCall = logger.calls.find((c) => c.level === "warn");
+  assert.ok(warnCall);
+  assert.equal(warnCall.obj.bodyBytes, body.byteLength);
 });
 
 test("stampIssueFingerprintsFailOpen returns the stamped body and logs on success", () => {

@@ -5,14 +5,12 @@ import protobuf from "protobufjs";
 
 const ISSUE_FINGERPRINT_ATTRIBUTE = "superlog.issue_fingerprint";
 
-let fingerprintStrippedCounter: Counter | null = null;
+const meter = metrics.getMeter("@superlog/proxy/operational");
+export const fingerprintStrippedCounter = meter.createCounter("superlog.proxy.fingerprint_stripped_total", {
+  description: "Total number of client-supplied superlog.issue_fingerprint attributes stripped.",
+});
+
 export function getFingerprintStrippedCounter(): Counter {
-  if (!fingerprintStrippedCounter) {
-    const meter = metrics.getMeter("@superlog/proxy/operational");
-    fingerprintStrippedCounter = meter.createCounter("superlog.proxy.fingerprint_stripped_total", {
-      description: "Total number of client-supplied superlog.issue_fingerprint attributes stripped.",
-    });
-  }
   return fingerprintStrippedCounter;
 }
 const require = createRequire(import.meta.url);
@@ -150,6 +148,7 @@ export function stampIssueFingerprintsFailOpen(
         path: input.path,
         projectId: input.projectId ?? "unknown",
         contentType: input.contentType,
+        bodyBytes: input.body.byteLength,
       },
       "failed to stamp issue fingerprints on ingest payload",
     );

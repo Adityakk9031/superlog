@@ -96,7 +96,7 @@ export function otlpLogsToRows(
   for (const rl of payload.resourceLogs ?? []) {
     const resourceMap = kvListToMap(rl.resource?.attributes);
     const serviceName = resourceMap["service.name"] ?? "";
-    const resourceAttributes = stripAllSuperlog(resourceMap, tracker);
+    const resourceAttributes = stripAllSuperlog(resourceMap);
     resourceAttributes[SUPERLOG_PROJECT_ID_KEY] = projectId;
     const resourceSchemaUrl = rl.schemaUrl ?? "";
 
@@ -205,7 +205,7 @@ export function otlpTracesToRows(
   for (const rs of payload.resourceSpans ?? []) {
     const resourceMap = kvListToMap(rs.resource?.attributes);
     const serviceName = resourceMap["service.name"] ?? "";
-    const resourceAttributes = stripAllSuperlog(resourceMap, tracker);
+    const resourceAttributes = stripAllSuperlog(resourceMap);
     resourceAttributes[SUPERLOG_PROJECT_ID_KEY] = projectId;
 
     for (const ss of rs.scopeSpans ?? []) {
@@ -229,7 +229,7 @@ export function otlpTracesToRows(
           ResourceAttributes: resourceAttributes,
           ScopeName: scopeName,
           ScopeVersion: scopeVersion,
-          SpanAttributes: stripAllSuperlog(kvListToMap(span.attributes), tracker),
+          SpanAttributes: stripAllSuperlog(kvListToMap(span.attributes)),
           Duration: (end > start ? end - start : 0n).toString(),
           StatusCode: STATUS_CODES[span.status?.code ?? 0] ?? "Unset",
           StatusMessage: span.status?.message ?? "",
@@ -241,7 +241,7 @@ export function otlpTracesToRows(
           "Links.TraceId": links.map((l) => toHex(l.traceId)),
           "Links.SpanId": links.map((l) => toHex(l.spanId)),
           "Links.TraceState": links.map((l) => l.traceState ?? ""),
-          "Links.Attributes": links.map((l) => stripAllSuperlog(kvListToMap(l.attributes), tracker)),
+          "Links.Attributes": links.map((l) => stripAllSuperlog(kvListToMap(l.attributes))),
         });
       }
     }
@@ -271,14 +271,10 @@ function kvListToMap(attrs: OtlpKeyValue[] | undefined): Record<string, string> 
 // superlog.project_id is re-added afterwards from the request context.
 function stripAllSuperlog(
   map: Record<string, string>,
-  tracker?: { strippedCount: number },
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(map)) {
     if (k.startsWith("superlog.")) {
-      if (k === ISSUE_FINGERPRINT_KEY && tracker) {
-        tracker.strippedCount += 1;
-      }
       continue;
     }
     out[k] = v;
