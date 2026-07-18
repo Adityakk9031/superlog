@@ -69,8 +69,8 @@ const ExportLogsServiceRequest = protobuf
 const PROTO_TO_OBJECT_OPTS = { longs: String, enums: Number, defaults: false };
 
 export type DecodedRows =
-  | { table: "otel_logs"; rows: OtelLogRow[] }
-  | { table: "otel_traces"; rows: OtelTraceRow[] };
+  | { table: "otel_logs"; rows: OtelLogRow[]; strippedCount: number }
+  | { table: "otel_traces"; rows: OtelTraceRow[]; strippedCount: number };
 
 export type DecodeInput = {
   path: string;
@@ -78,6 +78,7 @@ export type DecodeInput = {
   contentType: string;
   contentEncoding?: string;
   body: Buffer;
+  stamped?: boolean;
 };
 
 // Decode an OTLP ingest payload into ClickHouse rows. Returns null for signals we
@@ -91,18 +92,28 @@ export function decodeOtlpToRows(input: DecodeInput): DecodedRows | null {
   if (!json && !protobufContent) return null;
 
   const body = decompress(input.body, input.contentEncoding);
+  const stamped = input.stamped ?? false;
+  const tracker = { strippedCount: 0 };
 
   if (input.path === "/v1/logs") {
     const payload = json
       ? JSON.parse(body.toString("utf8"))
       : decodeProto(ExportLogsServiceRequest, body);
-    return { table: "otel_logs", rows: otlpLogsToRows(payload, input.projectId) };
+    return {
+      table: "otel_logs",
+      rows: otlpLogsToRows(payload, input.projectId, stamped, tracker),
+      strippedCount: tracker.strippedCount,
+    };
   }
 
   const payload = json
     ? JSON.parse(body.toString("utf8"))
     : decodeProto(ExportTraceServiceRequest, body);
-  return { table: "otel_traces", rows: otlpTracesToRows(payload, input.projectId) };
+  return {
+    table: "otel_traces",
+    rows: otlpTracesToRows(payload, input.projectId, stamped, tracker),
+    strippedCount: tracker.strippedCount,
+  };
 }
 
 // Decode an OTLP metrics export request (JSON or protobuf, possibly

@@ -811,7 +811,7 @@ async function forward(
       }
       requestBytes = bodyBuffer.byteLength;
 
-      const stampedBody = stampIssueFingerprintsFailOpen(
+      const { body: stampedBody } = stampIssueFingerprintsFailOpen(
         { path, contentType, contentEncoding, body: bodyBuffer, projectId },
         logger,
       );
@@ -1129,7 +1129,7 @@ const renderSyslogServer = RENDER_SYSLOG_PORT
         } else {
           // Direct mode has no consumer to stamp issue fingerprints, so stamp
           // here — same as the HTTP edge's direct branch.
-          const stampedBody = stampIssueFingerprintsFailOpen(
+          const { body: stampedBody } = stampIssueFingerprintsFailOpen(
             {
               path: "/v1/logs",
               contentType: "application/json",

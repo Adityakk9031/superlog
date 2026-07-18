@@ -213,12 +213,13 @@ test("stampIssueFingerprintsFailOpen forwards the original body when stamping th
   const body = Buffer.from('{"resourceLogs": broken');
   const logger = captureLogger();
 
-  const result = stampIssueFingerprintsFailOpen(
+  const { body: result, stamped } = stampIssueFingerprintsFailOpen(
     { path: "/v1/logs", contentType: "application/json", body, projectId: "p1" },
     logger,
   );
 
   assert.equal(result, body);
+  assert.equal(stamped, false);
   assert.equal(logger.calls.some((c) => c.level === "warn"), true);
 });
 
@@ -245,14 +246,15 @@ test("stampIssueFingerprintsFailOpen returns the stamped body and logs on succes
   );
   const logger = captureLogger();
 
-  const result = stampIssueFingerprintsFailOpen(
+  const { body: result, stamped } = stampIssueFingerprintsFailOpen(
     { path: "/v1/logs", contentType: "application/json", body, projectId: "p1" },
     logger,
   );
 
-  const stamped = JSON.parse(result.toString("utf8"));
-  const attrs = stamped.resourceLogs[0].scopeLogs[0].logRecords[0].attributes;
+  const stampedObj = JSON.parse(result.toString("utf8"));
+  const attrs = stampedObj.resourceLogs[0].scopeLogs[0].logRecords[0].attributes;
   assert.ok(attrs.find((a: { key: string }) => a.key === "superlog.issue_fingerprint"));
+  assert.equal(stamped, true);
   assert.equal(logger.calls.some((c) => c.level === "info"), true);
 });
 
@@ -380,7 +382,7 @@ test("stampIssueFingerprintsFailOpen logs a warning when client-supplied fingerp
   );
   const logger = captureLogger();
 
-  stampIssueFingerprintsFailOpen(
+  const { stamped } = stampIssueFingerprintsFailOpen(
     { path: "/v1/logs", contentType: "application/json", body, projectId: "p1" },
     logger,
   );
@@ -388,6 +390,7 @@ test("stampIssueFingerprintsFailOpen logs a warning when client-supplied fingerp
   const warnCall = logger.calls.find((c) => c.level === "warn");
   assert.ok(warnCall, "should have logged a warn call");
   assert.equal(warnCall.obj.strippedCount, 1);
+  assert.equal(stamped, true);
   assert.equal(
     warnCall.msg,
     "stripped client-supplied superlog.issue_fingerprint attributes on ingest payload",

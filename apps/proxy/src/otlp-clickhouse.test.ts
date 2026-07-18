@@ -78,7 +78,7 @@ test("otlpLogsToRows maps one row per log record with collector-compatible colum
 });
 
 test("otlpLogsToRows strips untrusted superlog.* but preserves proxy-stamped issue_fingerprint", () => {
-  const rows = otlpLogsToRows(logsExport, "proj-123");
+  const rows = otlpLogsToRows(logsExport, "proj-123", true);
   assert.equal(rows[0]!.ResourceAttributes["superlog.project_id"], "proj-123");
   assert.equal(rows[0]!.ResourceAttributes["service.name"], "checkout");
   assert.equal(rows[0]!.ResourceAttributes["service.version"], "1.2.3");
@@ -191,7 +191,7 @@ test("otlpTracesToRows maps spans with collector-compatible columns", () => {
 });
 
 test("otlpTracesToRows strips untrusted superlog.* from resource and span attrs, preserves issue_fingerprint", () => {
-  const r = otlpTracesToRows(tracesExport, "proj-xyz")[0]!;
+  const r = otlpTracesToRows(tracesExport, "proj-xyz", true)[0]!;
   assert.equal(r.ResourceAttributes["superlog.project_id"], "proj-xyz");
   assert.equal(r.ResourceAttributes["service.name"], "api");
   assert.equal(r.SpanAttributes["http.method"], "GET");
@@ -236,6 +236,7 @@ test("regression #285: issue_fingerprint survives direct-ClickHouse mapping for 
       ],
     },
     "p",
+    true,
   );
   // Fingerprint must reach ClickHouse so the log activity view admits the row.
   assert.equal(
@@ -269,6 +270,7 @@ test("regression #285: issue_fingerprint survives direct-ClickHouse mapping for 
       ],
     },
     "p",
+    true,
   );
   // Fingerprint must reach ClickHouse so the trace activity view admits the row.
   assert.equal(
@@ -317,4 +319,62 @@ test("control #285: ordinary (non-superlog) attributes are unaffected", () => {
   assert.equal(logRows[0]!.LogAttributes["user.id"], "u1");
   assert.equal(traceRows[0]!["Events.Attributes"][0]!["exception.type"], "Error");
   assert.equal(traceRows[0]!["Events.Attributes"][0]!["user.id"], "u1");
+});
+
+test("otlpLogsToRows strips issue_fingerprint when stamped is false", () => {
+  const fp = { key: "superlog.issue_fingerprint", value: { stringValue: "fp16" } };
+  const control = { key: "exception.type", value: { stringValue: "Error" } };
+  const tracker = { strippedCount: 0 };
+  const rows = otlpLogsToRows(
+    {
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                { timeUnixNano: "1000000000", severityNumber: 17, attributes: [control, fp] },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    "p",
+    false,
+    tracker,
+  );
+  assert.equal(rows[0]!.LogAttributes["superlog.issue_fingerprint"], undefined);
+  assert.equal(rows[0]!.LogAttributes["exception.type"], "Error");
+  assert.equal(tracker.strippedCount, 1);
+});
+
+test("otlpTracesToRows strips issue_fingerprint when stamped is false", () => {
+  const fp = { key: "superlog.issue_fingerprint", value: { stringValue: "fp16" } };
+  const control = { key: "exception.type", value: { stringValue: "Error" } };
+  const tracker = { strippedCount: 0 };
+  const rows = otlpTracesToRows(
+    {
+      resourceSpans: [
+        {
+          scopeSpans: [
+            {
+              spans: [
+                {
+                  startTimeUnixNano: "1000000000",
+                  endTimeUnixNano: "2000000000",
+                  events: [{ name: "exception", timeUnixNano: "1000000000", attributes: [control, fp] }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    "p",
+    false,
+    tracker,
+  );
+  assert.equal(rows[0]!["Events.Attributes"][0]!["superlog.issue_fingerprint"], undefined);
+  assert.equal(rows[0]!["Events.Attributes"][0]!["exception.type"], "Error");
+  assert.equal(tracker.strippedCount, 1);
 });

@@ -116,3 +116,59 @@ test("decodeOtlpToRows returns null for an undecodable content type", () => {
     null,
   );
 });
+
+test("decodeOtlpToRows handles client-supplied superlog attributes based on stamped status", () => {
+  const jsonLogsWithSpoofedFingerprint = JSON.stringify({
+    resourceLogs: [
+      {
+        resource: { attributes: [{ key: "service.name", value: { stringValue: "svc" } }] },
+        scopeLogs: [
+          {
+            scope: { name: "s" },
+            logRecords: [
+              {
+                timeUnixNano: "1718000000000000000",
+                body: { stringValue: "hi" },
+                attributes: [
+                  { key: "superlog.issue_fingerprint", value: { stringValue: "fake" } },
+                  { key: "superlog.other_key", value: { stringValue: "val" } },
+                  { key: "normal_key", value: { stringValue: "ok" } }
+                ]
+              }
+            ],
+          },
+        ],
+      },
+    ],
+  });
+
+  // Test Case 1: stamped = true -> preserves issue_fingerprint, strips other superlog keys
+  const resStamped = decodeOtlpToRows({
+    path: "/v1/logs",
+    projectId: "p1",
+    contentType: "application/json",
+    body: Buffer.from(jsonLogsWithSpoofedFingerprint),
+    stamped: true,
+  });
+  assert.ok(resStamped);
+  assert.equal(resStamped.table, "otel_logs");
+  assert.equal(resStamped.strippedCount, 1);
+  assert.equal(resStamped.rows[0]!.LogAttributes["superlog.issue_fingerprint"], "fake");
+  assert.equal(resStamped.rows[0]!.LogAttributes["superlog.other_key"], undefined);
+  assert.equal(resStamped.rows[0]!.LogAttributes["normal_key"], "ok");
+
+  // Test Case 2: stamped = false -> strips all superlog keys including issue_fingerprint
+  const resUnstamped = decodeOtlpToRows({
+    path: "/v1/logs",
+    projectId: "p1",
+    contentType: "application/json",
+    body: Buffer.from(jsonLogsWithSpoofedFingerprint),
+    stamped: false,
+  });
+  assert.ok(resUnstamped);
+  assert.equal(resUnstamped.table, "otel_logs");
+  assert.equal(resUnstamped.strippedCount, 2);
+  assert.equal(resUnstamped.rows[0]!.LogAttributes["superlog.issue_fingerprint"], undefined);
+  assert.equal(resUnstamped.rows[0]!.LogAttributes["superlog.other_key"], undefined);
+  assert.equal(resUnstamped.rows[0]!.LogAttributes["normal_key"], "ok");
+});

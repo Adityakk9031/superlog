@@ -5,7 +5,7 @@ import { type Counter, metrics } from "@opentelemetry/api";
 const ISSUE_FINGERPRINT_ATTRIBUTE = "superlog.issue_fingerprint";
 
 let fingerprintStrippedCounter: Counter | null = null;
-function getFingerprintStrippedCounter(): Counter {
+export function getFingerprintStrippedCounter(): Counter {
   if (!fingerprintStrippedCounter) {
     const meter = metrics.getMeter("@superlog/proxy/operational");
     fingerprintStrippedCounter = meter.createCounter("superlog.proxy.fingerprint_stripped_total", {
@@ -70,9 +70,10 @@ export interface FingerprintLogger {
 export function stampIssueFingerprintsFailOpen(
   input: StampInput & { projectId: string },
   logger: FingerprintLogger,
-): Buffer {
+): { body: Buffer; stamped: boolean } {
   try {
     const stamped = stampIssueFingerprintsWithinLimit(input);
+    const isStamped = !input.contentEncoding && input.body.byteLength <= MAX_FINGERPRINT_BODY_BYTES;
     if (stamped.stampedCount > 0) {
       logger.info(
         {
@@ -97,7 +98,7 @@ export function stampIssueFingerprintsFailOpen(
         "stripped client-supplied superlog.issue_fingerprint attributes on ingest payload",
       );
     }
-    return stamped.body;
+    return { body: stamped.body, stamped: isStamped };
   } catch (err) {
     logger.warn(
       {
@@ -108,7 +109,7 @@ export function stampIssueFingerprintsFailOpen(
       },
       "failed to stamp issue fingerprints on ingest payload",
     );
-    return input.body;
+    return { body: input.body, stamped: false };
   }
 }
 

@@ -21,7 +21,7 @@ import { Upload } from "@aws-sdk/lib-storage";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { type SpillSink, captureBody } from "./body-capture.js";
 import type { IngestRowWriter } from "./clickhouse-writer.js";
-import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
+import { getFingerprintStrippedCounter, stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
 import { type DecodedRows, decodeOtlpToRows } from "./otlp-decode.js";
 
@@ -793,7 +793,7 @@ export class IngestQueue {
       // Stamp issue fingerprints here, off the proxy's ingest hot path. This deserializes
       // the payload (size-guarded + fail-open inside the helper); a slow/OOM here only
       // redelivers an SQS message rather than 502-ing live ingest traffic.
-      const body = stampIssueFingerprintsFailOpen(
+      const { body, stamped } = stampIssueFingerprintsFailOpen(
         {
           path: parsed.path,
           contentType: parsed.contentType,
@@ -822,6 +822,7 @@ export class IngestQueue {
             contentType: parsed.contentType,
             contentEncoding: parsed.contentEncoding,
             body,
+            stamped,
           });
         } catch (decodeErr) {
           this.logger.warn(
@@ -831,6 +832,20 @@ export class IngestQueue {
         }
         if (decoded) {
           await this.rowWriter.insert(decoded.table, decoded.rows);
+          if (decoded.strippedCount > 0) {
+            getFingerprintStrippedCounter().add(decoded.strippedCount, {
+              path: parsed.path,
+              projectId: parsed.projectId ?? "unknown",
+            });
+            this.logger.warn(
+              {
+                path: parsed.path,
+                projectId: parsed.projectId ?? "unknown",
+                strippedCount: decoded.strippedCount,
+              },
+              "stripped client-supplied superlog.* attributes on direct-write payload",
+            );
+          }
           proxyOperationalRecorder.recordQueueDelivery({
             path: parsed.path,
             projectId: parsed.projectId,

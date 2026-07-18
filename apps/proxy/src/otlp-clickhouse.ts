@@ -86,12 +86,17 @@ const NANOS_PER_SECOND = 1_000_000_000n;
 // client-supplied and must be stripped to prevent tenant spoofing.
 const PRESERVED_SUPERLOG_KEYS = new Set([ISSUE_FINGERPRINT_KEY]);
 
-export function otlpLogsToRows(payload: OtlpLogsExport, projectId: string): OtelLogRow[] {
+export function otlpLogsToRows(
+  payload: OtlpLogsExport,
+  projectId: string,
+  stamped = false,
+  tracker?: { strippedCount: number },
+): OtelLogRow[] {
   const rows: OtelLogRow[] = [];
   for (const rl of payload.resourceLogs ?? []) {
     const resourceMap = kvListToMap(rl.resource?.attributes);
     const serviceName = resourceMap["service.name"] ?? "";
-    const resourceAttributes = stripAllSuperlog(resourceMap);
+    const resourceAttributes = stripAllSuperlog(resourceMap, tracker);
     resourceAttributes[SUPERLOG_PROJECT_ID_KEY] = projectId;
     const resourceSchemaUrl = rl.schemaUrl ?? "";
 
@@ -117,7 +122,7 @@ export function otlpLogsToRows(payload: OtlpLogsExport, projectId: string): Otel
           ScopeName: scopeName,
           ScopeVersion: scopeVersion,
           ScopeAttributes: scopeAttributes,
-          LogAttributes: stripUntrustedSuperlog(kvListToMap(lr.attributes)),
+          LogAttributes: stripUntrustedSuperlog(kvListToMap(lr.attributes), stamped, tracker),
           EventName: lr.eventName ?? "",
         });
       }
@@ -190,12 +195,17 @@ export type OtelTraceRow = {
 const SPAN_KINDS = ["Unspecified", "Internal", "Server", "Client", "Producer", "Consumer"];
 const STATUS_CODES = ["Unset", "Ok", "Error"];
 
-export function otlpTracesToRows(payload: OtlpTracesExport, projectId: string): OtelTraceRow[] {
+export function otlpTracesToRows(
+  payload: OtlpTracesExport,
+  projectId: string,
+  stamped = false,
+  tracker?: { strippedCount: number },
+): OtelTraceRow[] {
   const rows: OtelTraceRow[] = [];
   for (const rs of payload.resourceSpans ?? []) {
     const resourceMap = kvListToMap(rs.resource?.attributes);
     const serviceName = resourceMap["service.name"] ?? "";
-    const resourceAttributes = stripAllSuperlog(resourceMap);
+    const resourceAttributes = stripAllSuperlog(resourceMap, tracker);
     resourceAttributes[SUPERLOG_PROJECT_ID_KEY] = projectId;
 
     for (const ss of rs.scopeSpans ?? []) {
@@ -219,17 +229,19 @@ export function otlpTracesToRows(payload: OtlpTracesExport, projectId: string): 
           ResourceAttributes: resourceAttributes,
           ScopeName: scopeName,
           ScopeVersion: scopeVersion,
-          SpanAttributes: stripUntrustedSuperlog(kvListToMap(span.attributes)),
+          SpanAttributes: stripUntrustedSuperlog(kvListToMap(span.attributes), stamped, tracker),
           Duration: (end > start ? end - start : 0n).toString(),
           StatusCode: STATUS_CODES[span.status?.code ?? 0] ?? "Unset",
           StatusMessage: span.status?.message ?? "",
           "Events.Timestamp": events.map((e) => nanosToClickHouseDateTime64(e.timeUnixNano ?? 0)),
           "Events.Name": events.map((e) => e.name ?? ""),
-          "Events.Attributes": events.map((e) => stripUntrustedSuperlog(kvListToMap(e.attributes))),
+          "Events.Attributes": events.map((e) =>
+            stripUntrustedSuperlog(kvListToMap(e.attributes), stamped, tracker),
+          ),
           "Links.TraceId": links.map((l) => toHex(l.traceId)),
           "Links.SpanId": links.map((l) => toHex(l.spanId)),
           "Links.TraceState": links.map((l) => l.traceState ?? ""),
-          "Links.Attributes": links.map((l) => stripAllSuperlog(kvListToMap(l.attributes))),
+          "Links.Attributes": links.map((l) => stripAllSuperlog(kvListToMap(l.attributes), tracker)),
         });
       }
     }
@@ -257,10 +269,16 @@ function kvListToMap(attrs: OtlpKeyValue[] | undefined): Record<string, string> 
 // Strips ALL superlog.* attributes unconditionally. Used only for resource
 // attributes, where the proxy never stamps issue_fingerprint — only
 // superlog.project_id is re-added afterwards from the request context.
-function stripAllSuperlog(map: Record<string, string>): Record<string, string> {
+function stripAllSuperlog(
+  map: Record<string, string>,
+  tracker?: { strippedCount: number },
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(map)) {
-    if (k.startsWith("superlog.")) continue;
+    if (k.startsWith("superlog.")) {
+      if (tracker) tracker.strippedCount += 1;
+      continue;
+    }
     out[k] = v;
   }
   return out;
@@ -270,10 +288,21 @@ function stripAllSuperlog(map: Record<string, string>): Record<string, string> {
 // keys (currently superlog.issue_fingerprint). Clients must not be able to
 // spoof reserved namespace attributes; the proxy is the sole authoritative
 // source and stamps its own keys after sanitisation.
-function stripUntrustedSuperlog(map: Record<string, string>): Record<string, string> {
+function stripUntrustedSuperlog(
+  map: Record<string, string>,
+  stamped: boolean,
+  tracker?: { strippedCount: number },
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(map)) {
-    if (k.startsWith("superlog.") && !PRESERVED_SUPERLOG_KEYS.has(k)) continue;
+    if (k.startsWith("superlog.")) {
+      if (stamped && PRESERVED_SUPERLOG_KEYS.has(k)) {
+        out[k] = v;
+      } else {
+        if (tracker) tracker.strippedCount += 1;
+      }
+      continue;
+    }
     out[k] = v;
   }
   return out;
